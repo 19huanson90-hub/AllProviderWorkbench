@@ -30,7 +30,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
-import { resolveDefaultChatModel, type ChatTargetType } from '../lib/chatEngine.ts';
+import { DUCK2API_MODELS, resolveDefaultChatModel, type ChatTargetType } from '../lib/chatEngine.ts';
 import {
   GROK_BRIDGE_CAPABILITIES,
   GROK_BRIDGE_MODELS,
@@ -408,6 +408,13 @@ export function ChatWorkbenchView({
       setBridgeHealthz(json.healthz || (json.ok ? { ok: true } : null));
       if (Array.isArray(json.models) && json.models.length > 0) {
         setAvailableModels(json.models);
+        setModelId((cur) => {
+          const trimmed = cur.trim();
+          if (!trimmed || trimmed === 'default' || !json.models!.includes(trimmed)) {
+            return json.models![0];
+          }
+          return cur;
+        });
       }
     } catch {
       setBridgeHealthz(null);
@@ -1233,6 +1240,43 @@ export function ChatWorkbenchView({
                       {activeBridgeRuntime.logs.slice(-6).join('\n')}
                     </pre>
                   )}
+              </div>
+            )}
+
+            {/* DuckDuckGo AI (duck2api) Verified Quick-Model Selector */}
+            {targetType === 'bridge' && selectedBridgeId === 'duck2api' && (
+              <div className="space-y-2 rounded-md border border-teal-200 bg-teal-50/40 p-3 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-teal-950">DuckDuckGo AI Modelle (duck2api)</span>
+                  <button
+                    type="button"
+                    onClick={() => void fetchBridgeHealthz('duck2api')}
+                    disabled={loadingHealthz}
+                    className="inline-flex items-center gap-1 font-mono text-[10px] text-teal-800 hover:underline disabled:opacity-50"
+                  >
+                    <RefreshCw
+                      className={`h-3 w-3 ${loadingHealthz ? 'animate-spin' : ''}`}
+                      aria-hidden="true"
+                    />
+                    /v1/models
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {(availableModels.length > 0 ? availableModels : [...DUCK2API_MODELS]).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setModelId(m)}
+                      className={`rounded border px-2 py-1 font-mono text-[10px] transition-colors ${
+                        modelId === m
+                          ? 'border-teal-700 bg-teal-700 font-semibold text-white'
+                          : 'border-slate-300 bg-white text-slate-700 hover:border-teal-500'
+                      }`}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 

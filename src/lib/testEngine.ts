@@ -629,6 +629,9 @@ function resolveDefaultEndpoint(
     if (idLower.includes('sambanova')) return { base: 'https://api.sambanova.ai/v1', note: null };
     if (idLower.includes('siliconflow')) return { base: 'https://api.siliconflow.com/v1', note: null };
     if (idLower.includes('github-models')) return { base: 'https://models.github.ai/inference', note: null };
+    if (idLower === 'venice-ai' || idLower.includes('venice')) {
+      return { base: 'https://api.venice.ai/api/v1', note: null };
+    }
     if (idLower.includes('google-ai-studio') || idLower === 'gemini-api') {
       return { base: 'https://generativelanguage.googleapis.com/v1beta/openai', note: null };
     }

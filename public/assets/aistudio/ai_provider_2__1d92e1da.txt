@@ -4349,3 +4349,130 @@ for datei, dienst in scan_pfad("./mein_projekt"):
 - **datenpolitik:** {"speicherung": "Hosting in deutschen akademischen Rechenzentren (GWDG Goettingen) nach deutschen Datenschutzvorgaben"}
 - **kommerzielle_nutzung:** unklar
 - **quelle:** https://docs.hpc.gwdg.de/start_here/using_ai_services/contracts_ai/index.html  |  **entdeckt_am:** 2026-11-05
+## Unrestrictable AI (OpenAI-kompatible API, 579 Modelle)
+- **id:** unrestrictable-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://unrestrictable.ai
+- **kategorien:** kostenlos_dauerhaft, mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (unrestrictable.ai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Live verifizierte OpenAI-kompatible REST-API (https://unrestrictable.ai/v1) fuer unzensierte / abliterated Modelle. Empirisch geprueft (2026-11-21): GET /v1/models liefert HTTP 200 JSON mit 579 Modellen (u. a. abliterated-model, abliterated-model-large, aion-rp-llama-3.1-8b); POST /v1/chat/completions meldet HTTP 401 JSON ohne Bearer API-Key.
+- **einschraenkungen:** API-Aufrufe erfordern einen eigenen Bearer API-Key (Web-Chat bietet laut Anbieter kostenlosen Einstieg, REST-API ist nicht keyless) | Betreibertransparenz, Datenaufbewahrung und kommerzielle Nutzungsbedingungen nicht abschliessend verifiziert (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** web_session_free
+- **modelle:** {"anzahl": 579, "beispiele": ["abliterated-model", "abliterated-model-large", "aion-rp-llama-3.1-8b"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar - nicht unabhaengig geprueft"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://unrestrictable.ai/v1/models  |  **entdeckt_am:** 2026-11-21
+## Obscurify AI (OpenAI-kompatible API, 443 Modelle)
+- **id:** obscurify-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://obscurify.ai
+- **kategorien:** kostenlos_dauerhaft, mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (obscurify.ai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Live verifizierte OpenAI-kompatible REST-API (https://obscurify.ai/v1) mit Fokus auf privates/unzensiertes Modell-Routing. Empirisch geprueft (2026-11-21): GET /v1/models liefert HTTP 200 JSON mit 443 Modellen (u. a. abliteration-ai/abliterated-model, aion-labs/aion-3.0); POST /v1/chat/completions meldet HTTP 401 JSON ohne Bearer API-Key.
+- **einschraenkungen:** REST-API erfordert eigenen Bearer API-Key (nicht keyless) | No-Logs-Versprechen und Betreiber-ToS nicht unabhaengig auditiert (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** web_session_free
+- **modelle:** {"anzahl": 443, "beispiele": ["abliteration-ai/abliterated-model", "aion-labs/aion-3.0", "aion-labs/aion-rp-llama-3.1-8b"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "laut Anbieter No-Logs (nicht unabhaengig auditiert)"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://obscurify.ai/v1/models  |  **entdeckt_am:** 2026-11-21
+## UncensoredAIChat.ai (OpenAI-kompatible API)
+- **id:** uncensoredaichat-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://uncensoredaichat.ai/de/chat
+- **kategorien:** kostenlos_dauerhaft, mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (uncensoredaichat.ai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Web-Chat und live verifizierte OpenAI-kompatible REST-API (https://uncensoredaichat.ai/v1). Empirisch geprueft (2026-11-21): GET /v1/models und POST /v1/chat/completions antworten mit HTTP 401 JSON (Authorization: Bearer <key> erforderlich).
+- **einschraenkungen:** REST-API erfordert eigenen Bearer API-Key; kostenloser Sofort-Chat nur ueber Browser-Weboberflaeche | Betreibertransparenz, Datenpolitik und kommerzielle Lizenz unklar (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** web_session_free
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /v1/models mit Bearer-Key abrufbar"], "open_weight": false}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://uncensoredaichat.ai/de/chat  |  **entdeckt_am:** 2026-11-21
+## NoFilterAI (OpenAI-kompatible API)
+- **id:** nofilterai-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://nofilterai.ai
+- **kategorien:** kostenlos_dauerhaft, mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (nofilterai.ai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Web-Chat und live verifizierte OpenAI-kompatible REST-API (https://nofilterai.ai/v1). Empirisch geprueft (2026-11-21): GET /v1/models und POST /v1/chat/completions antworten mit HTTP 401 JSON (Authorization: Bearer <key> erforderlich).
+- **einschraenkungen:** REST-API erfordert eigenen Bearer API-Key (nicht keyless) | Identisches JSON-Fehlerformat wie uncensoredaichat.ai; Betreibertransparenz und Datenpolitik unklar (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** web_session_free
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /v1/models mit Bearer-Key abrufbar"], "open_weight": false}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://nofilterai.ai  |  **entdeckt_am:** 2026-11-21
+## UncutGPT (OpenAI-kompatible API)
+- **id:** uncutgpt  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://uncutgpt.com
+- **kategorien:** kostenlos_dauerhaft, mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (uncutgpt.com/api/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Web-Chat und live verifizierte OpenAI-kompatible REST-API (https://uncutgpt.com/api/v1). Empirisch geprueft (2026-11-21): GET /api/v1/models und POST /api/v1/chat/completions antworten mit HTTP 401 JSON (Authorization: Bearer <key> erforderlich).
+- **einschraenkungen:** REST-API erfordert eigenen Bearer API-Key | Betreibertransparenz, Datenpolitik und kommerzielle Lizenz unklar (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** web_session_free
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /api/v1/models mit Bearer-Key abrufbar"], "open_weight": false}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://uncutgpt.com  |  **entdeckt_am:** 2026-11-21
+## Uncensored.chat (OpenAI-kompatible API)
+- **id:** uncensored-chat  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://uncensored.chat
+- **kategorien:** kostenlos_dauerhaft, mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (uncensored.chat/api/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Persona-/Bot-Plattform mit live verifizierter OpenAI-kompatibler REST-API (https://uncensored.chat/api/v1). Empirisch geprueft (2026-11-21): GET /api/v1/models und POST /api/v1/chat/completions antworten mit HTTP 401 JSON (Bearer token is required).
+- **einschraenkungen:** REST-API erfordert eigenen Bearer-Token | Betreibertransparenz, Datenpolitik und kommerzielle Lizenz unklar (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** web_session_free
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /api/v1/models mit Bearer-Token abrufbar"], "open_weight": false}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://uncensored.chat  |  **entdeckt_am:** 2026-11-21
+## Infernus AI (OpenAI-kompatible API)
+- **id:** infernus-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://infernus.ai
+- **kategorien:** kostenlos_dauerhaft, mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (infernus.ai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Privater Web-Chat mit live verifizierter OpenAI-kompatibler REST-API (https://infernus.ai/v1). Empirisch geprueft (2026-11-21): GET /v1/models und POST /v1/chat/completions antworten mit HTTP 401 JSON (Expected: Bearer <api_key>).
+- **einschraenkungen:** REST-API erfordert eigenen Bearer API-Key | Betreibertransparenz, Datenpolitik und kommerzielle Lizenz unklar (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** web_session_free
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /v1/models mit Bearer-Key abrufbar"], "open_weight": false}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://infernus.ai  |  **entdeckt_am:** 2026-11-21
+## Cleus AI (OpenAI-kompatible API)
+- **id:** cleus-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://cleus.ai
+- **kategorien:** kostenlos_dauerhaft, mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (cleus.ai/api/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Chat- & Agent-Plattform mit live verifizierter OpenAI-kompatibler REST-API (https://cleus.ai/api/v1). Empirisch geprueft (2026-11-21): GET /api/v1/models und POST /api/v1/chat/completions antworten mit HTTP 401 JSON (Authorization: Bearer clsk_live_... erforderlich).
+- **einschraenkungen:** REST-API erfordert eigenen Cleus API-Key (Praefix clsk_live_...) | Betreibertransparenz, Datenpolitik und kommerzielle Lizenz unklar (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** web_session_free
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /api/v1/models mit Bearer-Key abrufbar"], "open_weight": false}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://cleus.ai  |  **entdeckt_am:** 2026-11-21
+## Ablit (OpenAI-kompatible API)
+- **id:** ablit-app  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://ablit.app
+- **kategorien:** kostenlos_dauerhaft, mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (ablit.app/api/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Uncensored-AI-Plattform mit live verifizierter OpenAI-kompatibler REST-API (https://ablit.app/api/v1). Empirisch geprueft (2026-11-21): GET /api/v1/models und POST /api/v1/chat/completions antworten mit HTTP 401 JSON (A valid Bearer API key is required).
+- **einschraenkungen:** REST-API erfordert eigenen Bearer API-Key | Betreibertransparenz, Datenpolitik und kommerzielle Lizenz unklar (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** web_session_free
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /api/v1/models mit Bearer-Key abrufbar"], "open_weight": false}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://ablit.app  |  **entdeckt_am:** 2026-11-21
+

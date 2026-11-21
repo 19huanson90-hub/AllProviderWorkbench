@@ -26,8 +26,8 @@ const { files, auditChecks } = generateAllSuiteFiles(
   'ai_provider(2).txt'
 );
 
-test('ZIEL 1: parses all 344 provider blocks from ai_provider(2).txt cleanly', () => {
-  assert.equal(parsed.length, 344, `Expected 344 blocks, got ${parsed.length}`);
+test('ZIEL 1: parses all 353 provider blocks from ai_provider(2).txt cleanly', () => {
+  assert.equal(parsed.length, 353, `Expected 353 blocks, got ${parsed.length}`);
   assert.ok(parsed.every((p) => p.id.length > 0 && p.name.length > 0));
   assert.ok(
     parsed.every((p) => !p.verbindungsart.includes('**protokoll:**')),
@@ -256,8 +256,13 @@ test('Multi-phase testEngine: WAF detection, Phase-4 scoring, analytics, and SSR
   assert.ok(analytics.blockedRule1OrRotCount >= 40);
 });
 
-import { buildBridgeManualCommands, detectLocalBridgeStartPlan } from './bridgeRunner.ts';
 import {
+  buildBridgeManualCommands,
+  detectLocalBridgeStartPlan,
+  resolveVenvPythonPath,
+} from './bridgeRunner.ts';
+import {
+  DUCK2API_MODELS,
   categorizeModelIds,
   extractChatCompletionReply,
   extractModelIds,
@@ -734,8 +739,13 @@ test('ChatEngine: default models, OVH/Pollinations non-chat model filtering, and
   assert.equal(resolveDefaultChatModel('pollinations'), 'openai-fast');
   assert.equal(resolveDefaultChatModel('ovh-ai-endpoints'), 'gpt-oss-20b');
   assert.equal(resolveDefaultChatModel(undefined, 'grok-com-to-openai'), 'grok-fast');
+  assert.equal(resolveDefaultChatModel(undefined, 'duck2api'), 'gpt-5.4-mini');
   assert.equal(resolveDefaultChatModel(undefined, 'freedeepseekapi'), 'deepseek-chat');
   assert.equal(resolveDefaultChatModel(undefined, 'openai-api-server-via-codex'), 'gpt-5.4-mini');
+  assert.equal(resolveDefaultChatModel(undefined, 'catgpt-gateway'), 'gpt-4o');
+  assert.equal(resolveDefaultChatModel(undefined, 'webai-to-api'), 'gemini-2.5-flash');
+  assert.ok(DUCK2API_MODELS.includes('gpt-5.4-mini'));
+  assert.ok(DUCK2API_MODELS.includes('claude-haiku-4-5'));
 
   const ovhModelsPayload = {
     object: 'list',
@@ -781,26 +791,44 @@ test('ChatEngine: default models, OVH/Pollinations non-chat model filtering, and
   assert.equal(webnnOverride.ok, true, 'WebNN may proceed only with explicit manual override');
 });
 
-test('BridgeRunner detects native entrypoints for webai-to-api, catgpt-gateway, codex Go cmd/, and qwengate start:node', () => {
+test('BridgeRunner detects native entrypoints, Python venv/pip/patchright & version caps, Go cmd/, and qwengate start:node', () => {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-suite-bridge-test-'));
   try {
-    // 1. webai-to-api (src/run.py)
+    // 1. webai-to-api (src/run.py + requirements.txt with python_version < 3.13)
     const webaiDir = path.join(tmpRoot, 'webai-to-api');
     fs.mkdirSync(path.join(webaiDir, 'src'), { recursive: true });
     fs.writeFileSync(path.join(webaiDir, 'src', 'run.py'), 'print("ok")');
+    fs.writeFileSync(
+      path.join(webaiDir, 'requirements.txt'),
+      'gemini-webapi==2.1.1 ; python_version >= "3.11" and python_version < "3.13"\n'
+    );
     const webaiPlan = detectLocalBridgeStartPlan(webaiDir, 8104);
     assert.equal(webaiPlan.runtime, 'python');
     assert.deepEqual(webaiPlan.args, ['src/run.py', '--host', '127.0.0.1', '--port', '8104']);
     assert.equal(webaiPlan.extraEnv?.PYTHONPATH, path.join(webaiDir, 'src'));
+    assert.equal(webaiPlan.needsPipInstall, true);
+    assert.equal(webaiPlan.pythonRequiresMaxMinor, 12);
 
-    // 2. catgpt-gateway (src/api/server.py)
+    // Once .venv + marker exist, needsPipInstall becomes false and bin points to venv python
+    const venvPy = resolveVenvPythonPath(webaiDir);
+    fs.mkdirSync(path.dirname(venvPy), { recursive: true });
+    fs.writeFileSync(venvPy, '');
+    fs.writeFileSync(path.join(webaiDir, '.venv', '.ai_suite_deps_ok'), 'ok\n');
+    const webaiReadyPlan = detectLocalBridgeStartPlan(webaiDir, 8104);
+    assert.equal(webaiReadyPlan.needsPipInstall, false);
+    assert.equal(webaiReadyPlan.bin, venvPy);
+
+    // 2. catgpt-gateway (src/api/server.py + patchright in requirements.txt)
     const catDir = path.join(tmpRoot, 'catgpt-gateway');
     fs.mkdirSync(path.join(catDir, 'src', 'api'), { recursive: true });
     fs.writeFileSync(path.join(catDir, 'src', 'api', 'server.py'), 'print("ok")');
+    fs.writeFileSync(path.join(catDir, 'requirements.txt'), 'patchright>=1.58\nfastapi>=0.115\n');
     const catPlan = detectLocalBridgeStartPlan(catDir, 8103);
     assert.equal(catPlan.runtime, 'python');
     assert.deepEqual(catPlan.args, ['-m', 'src.api.server']);
     assert.equal(catPlan.extraEnv?.USE_XVFB, 'false');
+    assert.equal(catPlan.needsPipInstall, true);
+    assert.equal(catPlan.needsPatchrightBrowser, true);
 
     // 3. openai-api-server-via-codex (go.mod + cmd/openai-api-server-via-codex/main.go)
     const codexDir = path.join(tmpRoot, 'openai-api-server-via-codex');
@@ -830,10 +858,62 @@ test('BridgeRunner detects native entrypoints for webai-to-api, catgpt-gateway, 
     assert.ok(mjs.content.includes('SKIP_ACCOUNT_MENU'));
     assert.ok(mjs.content.includes('SERVER_PORT'));
     assert.ok(mjs.content.includes('src.api.server'));
+    assert.ok(mjs.content.includes('.ai_suite_deps_ok'));
+    assert.ok(mjs.content.includes('patchright'));
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('Newly verified OpenAI-compatible REST APIs (9 GELB + venice-ai) resolve cleanly and pass SSRF/chat guards', () => {
+  const expectedApis: Array<{ id: string; baseUrl: string; defaultModel?: string }> = [
+    { id: 'unrestrictable-ai', baseUrl: 'https://unrestrictable.ai/v1', defaultModel: 'abliterated-model' },
+    { id: 'obscurify-ai', baseUrl: 'https://obscurify.ai/v1', defaultModel: 'abliteration-ai/abliterated-model' },
+    { id: 'uncensoredaichat-ai', baseUrl: 'https://uncensoredaichat.ai/v1' },
+    { id: 'nofilterai-ai', baseUrl: 'https://nofilterai.ai/v1' },
+    { id: 'uncutgpt', baseUrl: 'https://uncutgpt.com/api/v1' },
+    { id: 'uncensored-chat', baseUrl: 'https://uncensored.chat/api/v1' },
+    { id: 'infernus-ai', baseUrl: 'https://infernus.ai/v1' },
+    { id: 'cleus-ai', baseUrl: 'https://cleus.ai/api/v1' },
+    { id: 'ablit-app', baseUrl: 'https://ablit.app/api/v1' },
+  ];
+
+  for (const spec of expectedApis) {
+    const prov = classified.find((p) => p.id === spec.id);
+    assert.ok(prov, `${spec.id} must exist in catalog`);
+    assert.equal(prov.securityClass, 'GELB', `${spec.id} must be classified as GELB`);
+    assert.equal(isUsableGreenOrGelb(prov), true, `${spec.id} must be usable`);
+    assert.equal(classifyConnectionKind(prov).supportsOpenAiEndpoints, true, `${spec.id} must support OpenAI endpoints`);
+    const snips = buildConnectionSnippets(prov);
+    assert.equal(snips.defaultApiBase, spec.baseUrl, `${spec.id} defaultApiBase mismatch`);
+    assert.equal(validateInvokeTarget(prov, `${spec.baseUrl}/models`).ok, true, `${spec.id} invoke SSRF check failed`);
+    const chatCheck = validateChatTarget({
+      targetType: 'provider',
+      providerId: spec.id,
+      providers: classified,
+      bridgeSelections: selections,
+    });
+    assert.equal(chatCheck.ok, true, `${spec.id} chat target validation failed`);
+    if (chatCheck.ok) {
+      assert.equal(chatCheck.baseUrl, spec.baseUrl);
+    }
+    if (spec.defaultModel) {
+      assert.equal(resolveDefaultChatModel(spec.id), spec.defaultModel);
+    }
+  }
+
+  const venice = classified.find((p) => p.id === 'venice-ai');
+  assert.ok(venice, 'venice-ai must exist in catalog');
+  assert.equal(isUsableGreenOrGelb(venice), true);
+  assert.equal(buildConnectionSnippets(venice).defaultApiBase, 'https://api.venice.ai/api/v1');
+  assert.equal(validateInvokeTarget(venice, 'https://api.venice.ai/api/v1/models').ok, true);
+
+  const html = files.find((f) => f.path === 'gui/index.html')!;
+  assert.ok(html.content.includes('https://api.venice.ai/api/v1'));
+  assert.ok(html.content.includes('abliterated-model'));
+  assert.ok(html.content.includes('abliteration-ai/abliterated-model'));
+});
+
 
 
 

@@ -33,13 +33,26 @@ export function isLoopbackHost(hostname: string): boolean {
  * Validates and resolves any chat target (allowlisted Bridge, GRÜN/GELB Provider,
  * local LiteLLM router, or custom loopback server) with strict SSRF and Rule 1/3/4 guards.
  */
+export const DUCK2API_MODELS = [
+  'gpt-5.4-mini',
+  'gpt-5.4-nano',
+  'claude-haiku-4-5',
+  'mistral-small',
+  'tinfoil/gpt-oss-120b',
+] as const;
+
 export function resolveDefaultChatModel(providerId?: string, bridgeId?: string): string {
   if (bridgeId === 'grok-com-to-openai') return 'grok-fast';
+  if (bridgeId === 'duck2api') return 'gpt-5.4-mini';
   if (bridgeId === 'freedeepseekapi') return 'deepseek-chat';
   if (bridgeId === 'openai-api-server-via-codex') return 'gpt-5.4-mini';
+  if (bridgeId === 'catgpt-gateway') return 'gpt-4o';
+  if (bridgeId === 'webai-to-api') return 'gemini-2.5-flash';
   const pid = (providerId || '').toLowerCase();
   if (pid === 'pollinations' || pid.includes('pollinations')) return 'openai-fast';
   if (pid === 'ovh-ai-endpoints' || pid.includes('ovh')) return 'gpt-oss-20b';
+  if (pid === 'unrestrictable-ai') return 'abliterated-model';
+  if (pid === 'obscurify-ai') return 'abliteration-ai/abliterated-model';
   return 'default';
 }
 

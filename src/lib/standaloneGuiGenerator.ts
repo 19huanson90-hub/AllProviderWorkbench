@@ -551,6 +551,7 @@ export function generateStandaloneGuiHtml(): string {
       if (id === 'deepseek' || id.includes('deepseek-api')) return 'https://api.deepseek.com/v1';
       if (id.includes('sambanova')) return 'https://api.sambanova.ai/v1';
       if (id.includes('siliconflow')) return 'https://api.siliconflow.com/v1';
+      if (id === 'venice-ai' || id.includes('venice')) return 'https://api.venice.ai/api/v1';
       if (url.startsWith('http') && !url.includes('github.com')) {
         const clean = url.replace(/\\/+$/, '');
         if (/\\/v1(\\b|\\/)/i.test(clean)) return clean;
@@ -1056,11 +1057,16 @@ export function generateStandaloneGuiHtml(): string {
     function defaultChatModel(providerId, bridgeId) {
       const bid = String(bridgeId || '').toLowerCase();
       if (bid === 'grok-com-to-openai') return 'grok-fast';
+      if (bid === 'duck2api') return 'gpt-5.4-mini';
       if (bid === 'freedeepseekapi') return 'deepseek-chat';
       if (bid === 'openai-api-server-via-codex') return 'gpt-5.4-mini';
+      if (bid === 'catgpt-gateway') return 'gpt-4o';
+      if (bid === 'webai-to-api') return 'gemini-2.5-flash';
       const pid = String(providerId || '').toLowerCase();
       if (pid.includes('pollinations')) return 'openai-fast';
       if (pid.includes('ovh')) return 'gpt-oss-20b';
+      if (pid === 'unrestrictable-ai') return 'abliterated-model';
+      if (pid === 'obscurify-ai') return 'abliteration-ai/abliterated-model';
       return 'default';
     }
 
@@ -1459,8 +1465,10 @@ async function executeLocalBridge(id) {
   } catch {
     logBridge(id, 'Docker nicht aktiv — pruefe lokalen Direktstart ohne Docker.');
   }
-  let bin = null, args = [], extraEnv = {}, isGoRuntime = false;
+  let bin = null, args = [], extraEnv = {}, isGoRuntime = false, isPyRuntime = false;
   const pyBin = process.platform === 'win32' ? 'python' : 'python3';
+  const venvPy = process.platform === 'win32' ? path.join(dir, '.venv', 'Scripts', 'python.exe') : path.join(dir, '.venv', 'bin', 'python');
+  const venvMarker = path.join(dir, '.venv', '.ai_suite_deps_ok');
   if (fs.existsSync(path.join(dir, 'package.json'))) {
     let pkg = {};
     try { pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch {}
@@ -1492,17 +1500,17 @@ async function executeLocalBridge(id) {
       if (entry) { bin = process.execPath; args = [entry]; }
     }
   } else if (fs.existsSync(path.join(dir, 'src', 'run.py'))) {
-    bin = pyBin; args = ['src/run.py', '--host', '127.0.0.1', '--port', String(b.port)];
+    isPyRuntime = true; bin = pyBin; args = ['src/run.py', '--host', '127.0.0.1', '--port', String(b.port)];
     extraEnv = { PYTHONPATH: path.join(dir, 'src'), PYTHONUNBUFFERED: '1' };
   } else if (fs.existsSync(path.join(dir, 'src', 'api', 'server.py'))) {
-    bin = pyBin; args = ['-m', 'src.api.server'];
+    isPyRuntime = true; bin = pyBin; args = ['-m', 'src.api.server'];
     extraEnv = { USE_XVFB: 'false', PYTHONUNBUFFERED: '1' };
   } else if (fs.existsSync(path.join(dir, 'src', 'main.py'))) {
-    bin = pyBin; args = ['src/main.py'];
+    isPyRuntime = true; bin = pyBin; args = ['src/main.py'];
     extraEnv = { PYTHONPATH: path.join(dir, 'src'), PYTHONUNBUFFERED: '1' };
   } else if (['main.py', 'app.py', 'server.py', 'run.py', 'api.py'].some((f) => fs.existsSync(path.join(dir, f)))) {
     const pyEntry = ['main.py', 'app.py', 'server.py', 'run.py', 'api.py'].find((f) => fs.existsSync(path.join(dir, f)));
-    bin = pyBin; args = [pyEntry];
+    isPyRuntime = true; bin = pyBin; args = [pyEntry];
     extraEnv = { PYTHONUNBUFFERED: '1' };
   } else if (fs.existsSync(path.join(dir, 'go.mod'))) {
     isGoRuntime = true;
@@ -1516,6 +1524,30 @@ async function executeLocalBridge(id) {
         if (sub) { bin = 'go'; args = ['run', './cmd/' + sub.name]; }
       }
     }
+  }
+  if (isPyRuntime && fs.existsSync(path.join(dir, 'requirements.txt'))) {
+    if (!(fs.existsSync(venvPy) && fs.existsSync(venvMarker))) {
+      logBridge(id, 'Richte isolierte Python-Umgebung (.venv) & requirements.txt ein...');
+      try {
+        if (!fs.existsSync(venvPy)) {
+          await execFileAsync(pyBin, ['-m', 'venv', '.venv'], { cwd: dir, timeout: 60000 });
+        }
+        await execFileAsync(venvPy, ['-m', 'pip', 'install', '--no-input', '-r', 'requirements.txt'], { cwd: dir, timeout: 240000 });
+        const reqTxt = fs.readFileSync(path.join(dir, 'requirements.txt'), 'utf8');
+        if (/\\bpatchright\\b/i.test(reqTxt)) {
+          logBridge(id, 'Installiere Patchright Chromium-Browser...');
+          await execFileAsync(venvPy, ['-m', 'patchright', 'install', 'chromium'], { cwd: dir, timeout: 240000 });
+        }
+        fs.writeFileSync(venvMarker, 'ok\\n', 'utf8');
+        logBridge(id, 'Python .venv bereit.');
+      } catch (e) {
+        st.status = 'error';
+        st.error = 'Python-.venv/pip-Setup fehlgeschlagen: ' + (e.stderr || e.message || String(e)).slice(0, 220);
+        logBridge(id, st.error);
+        return st;
+      }
+    }
+    if (fs.existsSync(venvPy)) bin = venvPy;
   }
   if (!bin) {
     st.status = 'error';

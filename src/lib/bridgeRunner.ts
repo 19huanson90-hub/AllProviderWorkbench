@@ -15,7 +15,63 @@ export interface LocalBridgeStartPlan {
   commandDisplay: string;
   reason: string;
   needsNpmInstall?: boolean;
+  needsPipInstall?: boolean;
+  needsPatchrightBrowser?: boolean;
+  pythonRequiresMaxMinor?: number;
+  venvPythonPath?: string;
   extraEnv?: Record<string, string>;
+}
+
+export function resolveVenvPythonPath(
+  localDir: string,
+  platform: NodeJS.Platform = process.platform
+): string {
+  return platform === 'win32'
+    ? path.join(localDir, '.venv', 'Scripts', 'python.exe')
+    : path.join(localDir, '.venv', 'bin', 'python');
+}
+
+function inspectPythonRequirements(localDir: string): {
+  hasRequirements: boolean;
+  needsPipInstall: boolean;
+  needsPatchrightBrowser: boolean;
+  pythonRequiresMaxMinor?: number;
+  venvPythonPath: string;
+  useExistingVenv: boolean;
+} {
+  const reqPath = path.join(localDir, 'requirements.txt');
+  const hasRequirements = fs.existsSync(reqPath);
+  const venvPythonPath = resolveVenvPythonPath(localDir);
+  const markerPath = path.join(localDir, '.venv', '.ai_suite_deps_ok');
+  const venvExists = fs.existsSync(venvPythonPath);
+  const markerExists = fs.existsSync(markerPath);
+
+  let needsPatchrightBrowser = false;
+  let pythonRequiresMaxMinor: number | undefined;
+  if (hasRequirements) {
+    try {
+      const reqText = fs.readFileSync(reqPath, 'utf8');
+      needsPatchrightBrowser = /\bpatchright\b/i.test(reqText);
+      const maxMatch = reqText.match(/python_version\s*<\s*["']?3\.(\d+)\b/i);
+      if (maxMatch) {
+        const exclusiveMinor = Number(maxMatch[1]);
+        if (Number.isFinite(exclusiveMinor) && exclusiveMinor >= 9) {
+          pythonRequiresMaxMinor = exclusiveMinor - 1;
+        }
+      }
+    } catch {
+      // ignore read errors
+    }
+  }
+
+  return {
+    hasRequirements,
+    needsPipInstall: hasRequirements && !(venvExists && markerExists),
+    needsPatchrightBrowser,
+    pythonRequiresMaxMinor,
+    venvPythonPath,
+    useExistingVenv: venvExists && markerExists,
+  };
 }
 
 /**
@@ -148,15 +204,25 @@ export function detectLocalBridgeStartPlan(localDir: string, port: number): Loca
   }
 
   const pyBin = process.platform === 'win32' ? 'python' : 'python3';
+  const pyMeta = inspectPythonRequirements(localDir);
+  const effectivePyBin = pyMeta.useExistingVenv ? pyMeta.venvPythonPath : pyBin;
+  const pyPlanExtra = {
+    needsPipInstall: pyMeta.needsPipInstall,
+    needsPatchrightBrowser: pyMeta.needsPatchrightBrowser,
+    pythonRequiresMaxMinor: pyMeta.pythonRequiresMaxMinor,
+    venvPythonPath: pyMeta.venvPythonPath,
+  };
+
   const pyEntries = ['main.py', 'app.py', 'server.py', 'run.py', 'api.py'];
   for (const entry of pyEntries) {
     if (fs.existsSync(path.join(localDir, entry))) {
       return {
         runtime: 'python',
-        bin: pyBin,
+        bin: effectivePyBin,
         args: [entry],
         commandDisplay: `HOST=127.0.0.1 PORT=${port} ${pyBin} ${entry}`,
         reason: `Python-Einstiegspunkt ${entry} erkannt.`,
+        ...pyPlanExtra,
       };
     }
   }
@@ -165,31 +231,34 @@ export function detectLocalBridgeStartPlan(localDir: string, port: number): Loca
   if (fs.existsSync(path.join(localDir, 'src', 'run.py'))) {
     return {
       runtime: 'python',
-      bin: pyBin,
+      bin: effectivePyBin,
       args: ['src/run.py', '--host', '127.0.0.1', '--port', String(port)],
       commandDisplay: `${pyBin} src/run.py --host 127.0.0.1 --port ${port}`,
       reason: 'Python-Einstiegspunkt src/run.py erkannt (WebAI-to-API Layout).',
       extraEnv: { PYTHONPATH: path.join(localDir, 'src'), PYTHONUNBUFFERED: '1' },
+      ...pyPlanExtra,
     };
   }
   if (fs.existsSync(path.join(localDir, 'src', 'api', 'server.py'))) {
     return {
       runtime: 'python',
-      bin: pyBin,
+      bin: effectivePyBin,
       args: ['-m', 'src.api.server'],
       commandDisplay: `HOST=127.0.0.1 PORT=${port} ${pyBin} -m src.api.server`,
       reason: 'Python-Modul src.api.server erkannt (CatGPT-Gateway Layout).',
       extraEnv: { USE_XVFB: 'false', PYTHONUNBUFFERED: '1' },
+      ...pyPlanExtra,
     };
   }
   if (fs.existsSync(path.join(localDir, 'src', 'main.py'))) {
     return {
       runtime: 'python',
-      bin: pyBin,
+      bin: effectivePyBin,
       args: ['src/main.py'],
       commandDisplay: `HOST=127.0.0.1 PORT=${port} ${pyBin} src/main.py`,
       reason: 'Python-Einstiegspunkt src/main.py erkannt.',
       extraEnv: { PYTHONPATH: path.join(localDir, 'src'), PYTHONUNBUFFERED: '1' },
+      ...pyPlanExtra,
     };
   }
 
@@ -473,6 +542,181 @@ export class BridgeProcessManager {
     });
   }
 
+  private async runLoggedSubprocess(
+    bridgeId: string,
+    bin: string,
+    args: string[],
+    cwd: string,
+    label: string,
+    timeoutMs: number
+  ): Promise<{ ok: boolean; error?: string }> {
+    return new Promise((resolve) => {
+      let finished = false;
+      const done = (result: { ok: boolean; error?: string }) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+
+      const proc = spawn(bin, args, {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PIP_DISABLE_PIP_VERSION_CHECK: '1' },
+      });
+
+      const timer = setTimeout(() => {
+        try {
+          proc.kill('SIGTERM');
+        } catch {
+          // ignore
+        }
+        done({ ok: false, error: `${label} Zeitueberschreitung nach ${Math.round(timeoutMs / 1000)} Sekunden.` });
+      }, timeoutMs);
+
+      proc.stdout?.on('data', (chunk: Buffer) => this.appendLog(bridgeId, chunk.toString('utf8')));
+      proc.stderr?.on('data', (chunk: Buffer) => this.appendLog(bridgeId, chunk.toString('utf8')));
+      proc.on('error', (err) => {
+        done({ ok: false, error: `${label} Prozessfehler: ${err.message}` });
+      });
+      proc.on('exit', (code) => {
+        if (code === 0) {
+          done({ ok: true });
+        } else {
+          done({ ok: false, error: `${label} fehlgeschlagen (Exit-Code ${code ?? 'null'}).` });
+        }
+      });
+    });
+  }
+
+  private async resolveCompatiblePythonHost(
+    defaultPyBin: string,
+    maxMinor?: number
+  ): Promise<{ bin: string; version: string; incompatibleReason?: string }> {
+    const readVer = async (
+      bin: string,
+      prefixArgs: string[] = []
+    ): Promise<{ major: number; minor: number; version: string; exe: string } | null> => {
+      try {
+        const { stdout } = await execFileAsync(
+          bin,
+          [...prefixArgs, '-c', 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}|{sys.executable}")'],
+          { timeout: 4000 }
+        );
+        const [verStr, exePath] = stdout.trim().split('|');
+        const [maj, min] = (verStr || '').split('.').map(Number);
+        if (Number.isFinite(maj) && Number.isFinite(min) && exePath) {
+          return { major: maj, minor: min, version: `${maj}.${min}`, exe: exePath.trim() };
+        }
+      } catch {
+        // ignore
+      }
+      return null;
+    };
+
+    const primary = await readVer(defaultPyBin);
+    if (!primary) {
+      return { bin: defaultPyBin, version: 'unbekannt' };
+    }
+    if (!maxMinor || (primary.major === 3 && primary.minor <= maxMinor)) {
+      return { bin: primary.exe, version: primary.version };
+    }
+
+    // Default python is newer than requirements.txt allows (e.g. 3.13/3.14 vs WebAI-to-API <3.13):
+    // Try Windows py launcher (`py -3.12`, `py -3.11`) or versioned binaries (`python3.12`, `python3.11`).
+    const candidates: Array<{ bin: string; args: string[] }> =
+      process.platform === 'win32'
+        ? [
+            { bin: 'py', args: ['-3.12'] },
+            { bin: 'py', args: ['-3.11'] },
+          ]
+        : [
+            { bin: 'python3.12', args: [] },
+            { bin: 'python3.11', args: [] },
+          ];
+    for (const c of candidates) {
+      const found = await readVer(c.bin, c.args);
+      if (found && found.major === 3 && found.minor <= maxMinor) {
+        return { bin: found.exe, version: found.version };
+      }
+    }
+
+    return {
+      bin: primary.exe,
+      version: primary.version,
+      incompatibleReason: `Diese Bridge erfordert laut requirements.txt Python <= 3.${maxMinor}, aber lokal ist nur Python ${primary.version} gefunden. Bitte Python 3.12 installieren (z. B. winget install Python.Python.3.12) oder Docker Desktop nutzen.`,
+    };
+  }
+
+  private async runPythonVenvSetup(
+    bridgeId: string,
+    localDir: string,
+    hostPyBin: string,
+    venvPythonPath: string,
+    needsPatchrightBrowser: boolean,
+    pythonRequiresMaxMinor?: number
+  ): Promise<{ ok: boolean; venvPython?: string; error?: string }> {
+    const resolvedHost = await this.resolveCompatiblePythonHost(hostPyBin, pythonRequiresMaxMinor);
+    if (resolvedHost.incompatibleReason) {
+      this.appendLog(bridgeId, `KOMPATIBILITAETS-HINWEIS: ${resolvedHost.incompatibleReason}`);
+      return { ok: false, error: resolvedHost.incompatibleReason };
+    }
+
+    this.appendLog(
+      bridgeId,
+      `Richte isolierte Python-Umgebung (.venv) mit Python ${resolvedHost.version} ein ...`
+    );
+
+    if (!fs.existsSync(venvPythonPath)) {
+      const venvRes = await this.runLoggedSubprocess(
+        bridgeId,
+        resolvedHost.bin,
+        ['-m', 'venv', '.venv'],
+        localDir,
+        'python -m venv .venv',
+        60000
+      );
+      if (!venvRes.ok) return venvRes;
+    }
+
+    this.appendLog(bridgeId, 'Installiere Python-Pakete (pip install -r requirements.txt) — einmalig, bitte kurz warten ...');
+    const pipRes = await this.runLoggedSubprocess(
+      bridgeId,
+      venvPythonPath,
+      ['-m', 'pip', 'install', '--no-input', '-r', 'requirements.txt'],
+      localDir,
+      'pip install -r requirements.txt',
+      240000
+    );
+    if (!pipRes.ok) return pipRes;
+
+    if (needsPatchrightBrowser) {
+      this.appendLog(bridgeId, 'Installiere Patchright Chromium-Browser (patchright install chromium) ...');
+      const brRes = await this.runLoggedSubprocess(
+        bridgeId,
+        venvPythonPath,
+        ['-m', 'patchright', 'install', 'chromium'],
+        localDir,
+        'patchright install chromium',
+        240000
+      );
+      if (!brRes.ok) return brRes;
+    }
+
+    try {
+      fs.writeFileSync(
+        path.join(localDir, '.venv', '.ai_suite_deps_ok'),
+        `installed_at=${new Date().toISOString()}\npython=${resolvedHost.version}\n`,
+        'utf8'
+      );
+    } catch {
+      // non-fatal marker write failure
+    }
+
+    this.appendLog(bridgeId, 'Isolierte Python-Umgebung (.venv) bereit.');
+    return { ok: true, venvPython: venvPythonPath };
+  }
+
   async executeBridge(
     selection: BridgeSelectionEntry,
     repo: AllowlistedBridgeRepo,
@@ -630,12 +874,34 @@ export class BridgeProcessManager {
       }
     }
 
+    let spawnBin = plan.bin;
+    if (plan.runtime === 'python' && plan.needsPipInstall && plan.venvPythonPath) {
+      const pySetupRes = await this.runPythonVenvSetup(
+        bridgeId,
+        localDir,
+        plan.bin,
+        plan.venvPythonPath,
+        Boolean(plan.needsPatchrightBrowser),
+        plan.pythonRequiresMaxMinor
+      );
+      if (!pySetupRes.ok) {
+        st.status = 'error';
+        st.mode = 'none';
+        st.error = `${pySetupRes.error || 'Python-Setup fehlgeschlagen.'} Details siehe Live-Logs.`;
+        this.appendLog(bridgeId, `FEHLER: ${st.error}`);
+        return st;
+      }
+      if (pySetupRes.venvPython) {
+        spawnBin = pySetupRes.venvPython;
+      }
+    }
+
     this.appendLog(bridgeId, `Starte lokalen Prozess (strikt 127.0.0.1:${port}): ${plan.commandDisplay}`);
 
     let childExited = false;
     let exitCode: number | null = null;
 
-    const child = spawn(plan.bin, plan.args, {
+    const child = spawn(spawnBin, plan.args, {
       cwd: localDir,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
@@ -719,12 +985,14 @@ export class BridgeProcessManager {
       st.status = 'error';
       const joinedLogs = st.logs.join('\n');
       if (/deepseek-auth\.json/i.test(joinedLogs)) {
-        st.error = `DeepSeek-Erstlogin erforderlich (deepseek-auth.json fehlt). Einmalig in PowerShell ausfuehren: cd bridges\\${bridgeId} ; npm run auth`;
+        st.error = `DeepSeek-Erstlogin erforderlich (deepseek-auth.json fehlt). Einmalig in PowerShell ausfuehren (oeffnet Chrome-Login ohne Menue): cd bridges\\${bridgeId} ; npm run deepseek:auth`;
       } else if (/auth_file_not_found|\.codex[/\\]auth\.json/i.test(joinedLogs)) {
         st.error =
           'Codex-Erstlogin erforderlich (~/.codex/auth.json fehlt). Einmalig im Terminal `codex login` ausfuehren und Bridge neu starten.';
       } else if (/ModuleNotFoundError|No module named/i.test(joinedLogs)) {
-        st.error = `Python-Abhaengigkeiten fehlen. In PowerShell ausfuehren: cd bridges\\${bridgeId} ; pip install -r requirements.txt`;
+        st.error = plan.pythonRequiresMaxMinor
+          ? `Python-Modul fehlt (moeglicherweise Python-Version > 3.${plan.pythonRequiresMaxMinor}). Loesche bridges\\${bridgeId}\\.venv und installiere Python 3.12 oder nutze Docker.`
+          : `Python-Abhaengigkeiten fehlen. Loesche ggf. bridges\\${bridgeId}\\.venv oder fuehre aus: cd bridges\\${bridgeId} ; pip install -r requirements.txt`;
       } else if (!st.error) {
         st.error = `Prozess hat sich vor Port-Oeffnung auf 127.0.0.1:${port} beendet (Exit-Code ${exitCode ?? 'null'}). Siehe Live-Logs.`;
       }
