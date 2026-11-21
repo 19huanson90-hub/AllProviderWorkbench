@@ -1,0 +1,943 @@
+## 1. Kurze Bestätigung
+
+Aufgabe verstanden. Ich halte die harten Regeln ein:
+
+- **SCHWARZ/illegal** wird nur dokumentiert, niemals getestet, aufgerufen oder containerisiert.
+- **ROT** wird nicht getestet, nur dokumentiert und im Report markiert.
+- **GELB** bekommt nur Reachability-Checks, keine echten API-Calls.
+- **Keine Secrets** in Dateien: nur Platzhalter wie `<DEIN_KEY>`, `<DEIN_COOKIE>`.
+- **Docker-Ports** ausschließlich auf `127.0.0.1`.
+- **Web-Bridges** werden nicht automatisiert mit fremden Accounts aufgerufen.
+
+Wichtig: Ich habe in dieser Chat-Umgebung **keinen Zugriff auf `%USERPROFILE%\Downloads`**, kann **keine Netzwerkrequests ausführen** und **kein Docker starten**. Die eingeblendete Datei enthält **62 vollständige Provider-Blöcke** und endet mitten in `Ollama`. Der beigefügte Parser verarbeitet die vollständige lokale Datei, sobald du ihn ausführst. `test_results.csv` ist daher ein **Initialstatus**; echte Live-Ergebnisse erzeugt `run_tests.py`.
+
+---
+
+## 2. Schritt-für-Schritt-Plan
+
+1. Ausgabeordner `%USERPROFILE%\Desktop\ai-provider-suite\` anlegen.
+2. Dateien aus dieser Antwort dort speichern.
+3. `ai_provider(2).txt` nach `%USERPROFILE%\Downloads\ai_provider(2).txt` legen.
+4. `python tools\parse_and_classify.py` ausführen → `classification.json`.
+5. `python tools\run_tests.py` ausführen → `test_results.csv`.
+6. `.env.example` nach `.env` kopieren und Platzhalter setzen.
+7. Bridge-Repos nach `bridges\<id>` klonen, falls du die ToS-Risiko-Bridges wirklich starten willst.
+8. `docker-compose.yml` prüfen: alle Ports auf `127.0.0.1`.
+9. `litellm_config.yaml` prüfen: keine echten Keys.
+10. `.\start-all.ps1` starten → nur Router.
+11. Optional: `.\start-all.ps1 -IncludeTosRiskBridges` nach eigener ToS-Prüfung.
+12. Dashboard/API testen: `http://127.0.0.1:4000`.
+13. `.\stop-all.ps1` zum Stoppen.
+14. `REPORT.md` und `SECURITY.md` lesen.
+15. ROT/SCHWARZ nicht testen; GELB nur manuell auf Erreichbarkeit prüfen.
+
+---
+
+## 3. Erzeugte Dateien
+
+### `classification.json`
+
+```json
+[
+{"id":"qwengate","name":"QwenGate","security_class":"ROT","riskant":true,"empfehlenswert":false,"verbindungsart":"Webclient-Bridge","auth_typ":"browser_session","free_tier_typ":"web_session_free","url":"https://github.com/youssefvdel/qwengate","note":"Webclient-Automation; ToS-Grauzone; nicht testen"},
+{"id":"composer-api","name":"API for Cursor","security_class":"ROT","riskant":true,"empfehlenswert":"unklar","verbindungsart":"SDK-eigen","auth_typ":"api_key","free_tier_typ":null,"url":"https://github.com/standardagents/composer-api","note":"Reverse-Engineered-Web; Cursor-ToS-Risiko; nicht testen"},
+{"id":"zerokey","name":"ZeroKey","security_class":"ROT","riskant":true,"empfehlenswert":false,"verbindungsart":"Webclient-Bridge","auth_typ":"browser_session","free_tier_typ":"web_session_free","url":"https://github.com/Cyberpradeep/ZeroKey","note":"ChatGPT-Web-Automation; Lizenz unklar; nicht testen"},
+{"id":"zenmux","name":"ZenMux","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":null,"url":"https://zenmux.ai","note":"Offizielles Gateway; kein dokumentiertes Free-Tier"},
+{"id":"zen-proxy","name":"zen-proxy","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"Anthropic-native","auth_typ":"keine","free_tier_typ":"dauerhaft","url":"https://github.com/Parithosh-Varma/zen-proxy","note":"Lokaler Proxy auf offiziellen OpenCode-Zen-Free-Tier"},
+{"id":"zapier-mcp","name":"Zapier MCP","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"MCP","auth_typ":"api_key","free_tier_typ":"dauerhaft","url":"https://zapier.com/mcp","note":"Gehosteter offizieller MCP-Server; Free-Plan limitiert"},
+{"id":"zai-glm-api","name":"Z.ai GLM API","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":null,"url":"https://docs.z.ai/guides/overview/pricing","note":"Offizielle API; Flash-Modelle dauerhaft kostenlos"},
+{"id":"xai-grok-api","name":"xAI Grok API","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":"trial","url":"https://x.ai/api","note":"Offizielle API; kein bestätigtes Free-Tier"},
+{"id":"wllama","name":"wllama","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"Browser-only","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://github.com/ngxson/wllama","note":"Lokale Browser-Inferenz; MIT"},
+{"id":"windows-ai-apis","name":"Windows AI APIs","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"SDK-eigen","auth_typ":"keine","free_tier_typ":"dauerhaft","url":"https://learn.microsoft.com/en-us/windows/ai/apis/phi-silica","note":"Offizielle Microsoft-On-Device-APIs; Hardware-/LAF-Hürden"},
+{"id":"webnn-api","name":"WebNN API","security_class":"GELB","riskant":false,"empfehlenswert":"unklar","verbindungsart":"Browser-only","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://www.w3.org/TR/webnn/","note":"Standard-Preview; nicht produktionsreif; empfehlenswert unklar"},
+{"id":"webmodel","name":"WebModel","security_class":"ROT","riskant":true,"empfehlenswert":false,"verbindungsart":"Webclient-Bridge","auth_typ":"browser_session","free_tier_typ":"web_session_free","url":"https://github.com/linuxhsj/WebModel","note":"Web-Account-Bindung; ~7 Monate stale; nicht testen"},
+{"id":"webllm","name":"WebLLM","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"Browser-only","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://github.com/mlc-ai/web-llm","note":"Lokale Browser-Inferenz; Apache-2.0"},
+{"id":"webai-to-api","name":"WebAI-to-API","security_class":"ROT","riskant":true,"empfehlenswert":false,"verbindungsart":"Webclient-Bridge","auth_typ":"browser_session","free_tier_typ":"web_session_free","url":"https://github.com/Amm1rr/WebAI-to-API","note":"Reverse-Engineered-Web + Cookie-Bypass; nicht testen"},
+{"id":"vllm","name":"vLLM","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://docs.vllm.ai","note":"Lokaler GPU-Inferenzserver; Apache-2.0"},
+{"id":"vercel-ai-gateway","name":"Vercel AI Gateway","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":null,"url":"https://vercel.com/ai-gateway","note":"Offizielles Gateway; 5 USD/Monat Free-Credits"},
+{"id":"uni-api","name":"Uni-API","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":"open_weights_lokal","url":"https://github.com/yym68686/uni-api","note":"Self-hosted Proxy; nur eigene Keys"},
+{"id":"truffle-hf-secrets-scan","name":"Truffle Security HF-Secrets-Scan","security_class":"GRÜN","riskant":false,"empfehlenswert":false,"verbindungsart":"Browser-only","auth_typ":null,"free_tier_typ":null,"url":"https://trufflesecurity.com/blog/scanning-7-6-petabytes-of-ai-training-data-for-secrets","note":"Forschungsquelle; kein Zugangsweg"},
+{"id":"transformers-js","name":"Transformers.js","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"Browser-only","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://github.com/huggingface/transformers.js","note":"Lokale ONNX-Inferenz; Apache-2.0"},
+{"id":"toolhive","name":"ToolHive","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"MCP","auth_typ":null,"free_tier_typ":null,"url":"https://github.com/stacklok/toolhive","note":"MCP-Runtime; Apache-2.0"},
+{"id":"together-ai","name":"Together AI","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":null,"url":"https://www.together.ai","note":"Offizielle Inferenz-Cloud; prepaid"},
+{"id":"tensorzero","name":"TensorZero","security_class":"GRÜN","riskant":false,"empfehlenswert":false,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":null,"free_tier_typ":null,"url":"https://tensorzero.com","note":"Eingestellt; nicht für Neu-Deployments"},
+{"id":"tensorrt-llm","name":"NVIDIA TensorRT LLM","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://github.com/NVIDIA/TensorRT-LLM","note":"NVIDIA-GPU-Inferenz; Apache-2.0"},
+{"id":"tabbyapi","name":"TabbyAPI","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":"open_weights_lokal","url":"https://github.com/theroyallab/tabbyAPI","note":"Lokaler ExLlamaV3-Server; AGPL-3.0"},
+{"id":"supabase-mcp","name":"Supabase MCP","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"MCP","auth_typ":"oauth","free_tier_typ":null,"url":"https://mcp.supabase.com/mcp","note":"Offizieller gehosteter MCP; OAuth nötig"},
+{"id":"stagehand","name":"Stagehand","security_class":"GELB","riskant":false,"empfehlenswert":false,"verbindungsart":"SDK-eigen","auth_typ":null,"free_tier_typ":null,"url":"https://github.com/browserbase/stagehand","note":"Tier C; Web-Automation; konservativ GELB"},
+{"id":"smithery","name":"Smithery","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"MCP","auth_typ":null,"free_tier_typ":null,"url":"https://smithery.ai","note":"MCP-Registry/Hosting; AGPL-CLI"},
+{"id":"skyvern","name":"Skyvern","security_class":"GELB","riskant":false,"empfehlenswert":false,"verbindungsart":"SDK-eigen","auth_typ":null,"free_tier_typ":null,"url":"https://github.com/Skyvern-AI/skyvern","note":"Tier C; Browser-Automation; konservativ GELB"},
+{"id":"siliconflow","name":"SiliconFlow","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":"dauerhaft","url":"https://www.siliconflow.com/pricing","note":"Offizielle API; Realname-Hürden"},
+{"id":"sglang","name":"SGLang","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://github.com/sgl-project/sglang","note":"Lokaler GPU-Inferenzserver; Apache-2.0"},
+{"id":"semantic-router","name":"vLLM Semantic Router","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://github.com/vllm-project/semantic-router","note":"Lokales Routing; Apache-2.0"},
+{"id":"secrets-extraction-paper","name":"Practical Secrets Extraction Paper","security_class":"GRÜN","riskant":false,"empfehlenswert":false,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":null,"free_tier_typ":null,"url":"https://arxiv.org/abs/2609.36941","note":"Forschungsquelle; kein Zugangsweg"},
+{"id":"sambanova-cloud","name":"SambaNova Cloud","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":"dauerhaft","url":"https://cloud.sambanova.ai","note":"Offizielle API; 20 RPD Free"},
+{"id":"runpod","name":"RunPod","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":null,"url":"https://www.runpod.io/pricing","note":"GPU-Cloud; kein allgemeiner Free-Tier"},
+{"id":"routellm","name":"RouteLLM","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":"open_weights_lokal","url":"https://github.com/lm-sys/RouteLLM","note":"Forschungs-Routing; Apache-2.0"},
+{"id":"requesty","name":"Requesty AI Gateway","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":"dauerhaft","url":"https://www.requesty.ai/pricing","note":"Offizielles Gateway; 200 RPD Free"},
+{"id":"replicate","name":"Replicate","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":null,"url":"https://replicate.com/pricing","note":"Pay-per-Use; kein Free-Tier ausgewiesen"},
+{"id":"reasoning-traces-replay-paper","name":"Reasoning Traces Paper","security_class":"GRÜN","riskant":false,"empfehlenswert":false,"verbindungsart":"Browser-only","auth_typ":null,"free_tier_typ":null,"url":"https://arxiv.org/abs/2608.09867","note":"Forschungsquelle; kein Zugangsweg"},
+{"id":"ramalama","name":"RamaLama","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://github.com/containers/ramalama","note":"Containerisierte lokale Inferenz; MIT"},
+{"id":"qwen-chat","name":"Qwen Chat","security_class":"GELB","riskant":false,"empfehlenswert":"unklar","verbindungsart":"Browser-only","auth_typ":null,"free_tier_typ":"web_session_free","url":"https://chat.qwen.ai","note":"Offizieller Web-Chat; Anmeldepflicht/Datenpolitik unklar"},
+{"id":"puter-js","name":"Puter.js","security_class":"GELB","riskant":true,"empfehlenswert":"unklar","verbindungsart":"Browser-SDK","auth_typ":"endnutzer_konto","free_tier_typ":"endnutzer_finanziert","url":"https://github.com/HeyPuter/puter","note":"ToS: nur personal/non-commercial; riskant=True"},
+{"id":"portkey-gateway","name":"Portkey AI Gateway","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":null,"url":"https://github.com/Portkey-AI/gateway","note":"Self-hosted Gateway; MIT"},
+{"id":"pollinations","name":"Pollinations.AI","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"keine","free_tier_typ":"dauerhaft","url":"https://gen.pollinations.ai","note":"Anonymous-keyless; strikt rate-limitiert"},
+{"id":"playwright-mcp","name":"Playwright MCP","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"MCP","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://github.com/microsoft/playwright-mcp","note":"Offizieller Microsoft-MCP; ToS je Zielseite prüfen"},
+{"id":"plano","name":"Plano","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://github.com/katanemo/plano","note":"Self-hosted Proxy; Apache-2.0"},
+{"id":"pipedream-mcp","name":"Pipedream MCP","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"MCP","auth_typ":"oauth","free_tier_typ":"dauerhaft","url":"https://pipedream.com/docs/connect/mcp","note":"Gehosteter MCP; OAuth nötig"},
+{"id":"oracle-oci-genai","name":"Oracle OCI Generative AI","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"SDK-eigen","auth_typ":"api_key","free_tier_typ":"trial","url":"https://www.oracle.com/artificial-intelligence/generative-ai/generative-ai-service/","note":"Offizieller Managed-Dienst; Trial-Credits"},
+{"id":"openrouter-chat","name":"OpenRouter Chat","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"Browser-only","auth_typ":"browser_session","free_tier_typ":"web_session_free","url":"https://openrouter.ai/chat","note":"Offizieller Playground; Konto nötig"},
+{"id":"openrouter","name":"OpenRouter","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":"dauerhaft","url":"https://openrouter.ai","note":"Offizielles Gateway; ':free'-Modelle limitiert"},
+{"id":"opencode-zen","name":"OpenCode Zen","security_class":"GELB","riskant":false,"empfehlenswert":"unklar","verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"keine","free_tier_typ":null,"url":"https://opencode.ai/zen","note":"Free-Modelle an OpenCode-Client gebunden; Dauerhaftigkeit unklar"},
+{"id":"opencode-console-breach","name":"OpenCode Console Breach","security_class":"SCHWARZ","riskant":true,"empfehlenswert":false,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":null,"url":"https://techcrunch.com/2026/10/19/hackers-hit-ai-coding-tool-opencode-running-up-charges-on-users-ai-accounts","note":"Illegal; kompromittierte Fremd-Keys; nur dokumentieren"},
+{"id":"openai-rosalind-academic-plan","name":"OpenAI Rosalind Academic Plan","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"Browser-only","auth_typ":"institutionell","free_tier_typ":"research_grant","url":"https://openai.com/rosalind","note":"Akademisches Grant; kein API-Zugang"},
+{"id":"openai-researcher-access","name":"OpenAI Researcher Access Program","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"institutionell","free_tier_typ":"research_grant","url":"https://openai.com/form/researcher-access-program","note":"Akademische API-Credits; quartalsweise Prüfung"},
+{"id":"openai-api-server-via-codex","name":"OpenAI API Server via Codex","security_class":"ROT","riskant":true,"empfehlenswert":false,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"oauth","free_tier_typ":"endnutzer_finanziert","url":"https://github.com/hotchpotch/openai-api-server-via-codex","note":"Reverse-Engineered Codex-Backend; ToS unklar; nicht testen"},
+{"id":"openai-api","name":"OpenAI API","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":null,"url":"https://platform.openai.com/docs/api-reference","note":"Offizielle API; prepaid"},
+{"id":"open-webui","name":"Open WebUI","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://github.com/open-webui/open-webui","note":"Self-hosted UI; eigene Lizenz mit Branding-Klausel"},
+{"id":"onnxruntime-web","name":"ONNX Runtime Web","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"Browser-only","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://onnxruntime.ai/docs/tutorials/web","note":"Lokale ONNX-Inferenz; MIT"},
+{"id":"one-hub","name":"One-Hub","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":"open_weights_lokal","url":"https://github.com/MartialBE/one-hub","note":"Aktiver one-api-Fork; Apache-2.0"},
+{"id":"one-api","name":"one-api","security_class":"GELB","riskant":false,"empfehlenswert":"unklar","verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":null,"url":"https://github.com/songquanpeng/one-api","note":"Seit 2025 kein Commit; empfehlenswert unklar"},
+{"id":"omniroute","name":"OmniRoute","security_class":"GELB","riskant":true,"empfehlenswert":"unklar","verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":null,"url":"https://github.com/diegosouzapw/OmniRoute","note":"Subscription-Bridge + TLS-Fingerprinting; riskant=True"},
+{"id":"ollama-cloud","name":"Ollama Cloud","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"api_key","free_tier_typ":"trial","url":"https://docs.ollama.com/cloud","note":"Offizieller Cloud-Dienst; Free-Plan limitiert"},
+{"id":"ollama","name":"Ollama","security_class":"GRÜN","riskant":false,"empfehlenswert":true,"verbindungsart":"REST/OpenAI-kompatibel","auth_typ":"keine","free_tier_typ":"open_weights_lokal","url":"https://ollama.com","note":"Lokale Runtime; MIT; Block in Quelle abgeschnitten"}
+]
+```
+
+---
+
+### `test_results.csv`
+
+```csv
+"id","name","kategorie","status","http_code","risky","empfohlen","note","url"
+"qwengate","QwenGate","ROT","SKIPPED (ToS-Risiko)","","True","False","Webclient-Automation; nicht testen","https://github.com/youssefvdel/qwengate"
+"composer-api","API for Cursor","ROT","SKIPPED (ToS-Risiko)","","True","unklar","Reverse-Engineered-Web; nicht testen","https://github.com/standardagents/composer-api"
+"zerokey","ZeroKey","ROT","SKIPPED (ToS-Risiko)","","True","False","ChatGPT-Web-Automation; nicht testen","https://github.com/Cyberpradeep/ZeroKey"
+"zenmux","ZenMux","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://zenmux.ai"
+"zen-proxy","zen-proxy","GRÜN","PENDING_LIVE_TEST","","False","True","Anonymer Free-Tier möglich","https://github.com/Parithosh-Varma/zen-proxy"
+"zapier-mcp","Zapier MCP","GRÜN","PENDING_REACHABILITY","","False","True","MCP/OAuth","https://zapier.com/mcp"
+"zai-glm-api","Z.ai GLM API","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://docs.z.ai/guides/overview/pricing"
+"xai-grok-api","xAI Grok API","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://x.ai/api"
+"wllama","wllama","GRÜN","PENDING_REACHABILITY","","False","True","Browser-only","https://github.com/ngxson/wllama"
+"windows-ai-apis","Windows AI APIs","GRÜN","PENDING_REACHABILITY","","False","True","SDK/On-Device","https://learn.microsoft.com/en-us/windows/ai/apis/phi-silica"
+"webnn-api","WebNN API","GELB","PENDING_REACHABILITY","","False","unklar","Nur Reachability; kein API-Call","https://www.w3.org/TR/webnn/"
+"webmodel","WebModel","ROT","SKIPPED (ToS-Risiko)","","True","False","Web-Account-Bindung; nicht testen","https://github.com/linuxhsj/WebModel"
+"webllm","WebLLM","GRÜN","PENDING_REACHABILITY","","False","True","Browser-only","https://github.com/mlc-ai/web-llm"
+"webai-to-api","WebAI-to-API","ROT","SKIPPED (ToS-Risiko)","","True","False","Reverse-Engineered/Cookie-Bypass; nicht testen","https://github.com/Amm1rr/WebAI-to-API"
+"vllm","vLLM","GRÜN","PENDING_LIVE_TEST","","False","True","Lokaler Endpunkt /v1/models","https://docs.vllm.ai"
+"vercel-ai-gateway","Vercel AI Gateway","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://vercel.com/ai-gateway"
+"uni-api","Uni-API","GRÜN","SKIPPED (kein Key)","","False","True","Nur eigene Keys","https://github.com/yym68686/uni-api"
+"truffle-hf-secrets-scan","Truffle Security HF-Secrets-Scan","GRÜN","DOCUMENTED_ONLY","","False","False","Forschungsquelle","https://trufflesecurity.com/blog/scanning-7-6-petabytes-of-ai-training-data-for-secrets"
+"transformers-js","Transformers.js","GRÜN","PENDING_REACHABILITY","","False","True","Browser-only","https://github.com/huggingface/transformers.js"
+"toolhive","ToolHive","GRÜN","PENDING_REACHABILITY","","False","True","MCP-Runtime","https://github.com/stacklok/toolhive"
+"together-ai","Together AI","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://www.together.ai"
+"tensorzero","TensorZero","GRÜN","PENDING_REACHABILITY","","False","False","Eingestellt; nur dokumentieren","https://tensorzero.com"
+"tensorrt-llm","NVIDIA TensorRT LLM","GRÜN","PENDING_LIVE_TEST","","False","True","Lokaler Endpunkt","https://github.com/NVIDIA/TensorRT-LLM"
+"tabbyapi","TabbyAPI","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://github.com/theroyallab/tabbyAPI"
+"supabase-mcp","Supabase MCP","GRÜN","PENDING_REACHABILITY","","False","True","OAuth nötig","https://mcp.supabase.com/mcp"
+"stagehand","Stagehand","GELB","PENDING_REACHABILITY","","False","False","Tier C; nur Reachability","https://github.com/browserbase/stagehand"
+"smithery","Smithery","GRÜN","PENDING_REACHABILITY","","False","True","MCP-Registry","https://smithery.ai"
+"skyvern","Skyvern","GELB","PENDING_REACHABILITY","","False","False","Tier C; nur Reachability","https://github.com/Skyvern-AI/skyvern"
+"siliconflow","SiliconFlow","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://www.siliconflow.com/pricing"
+"sglang","SGLang","GRÜN","PENDING_LIVE_TEST","","False","True","Lokaler Endpunkt","https://github.com/sgl-project/sglang"
+"semantic-router","vLLM Semantic Router","GRÜN","PENDING_LIVE_TEST","","False","True","Lokaler Endpunkt","https://github.com/vllm-project/semantic-router"
+"secrets-extraction-paper","Practical Secrets Extraction Paper","GRÜN","DOCUMENTED_ONLY","","False","False","Forschungsquelle","https://arxiv.org/abs/2609.36941"
+"sambanova-cloud","SambaNova Cloud","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://cloud.sambanova.ai"
+"runpod","RunPod","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://www.runpod.io/pricing"
+"routellm","RouteLLM","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://github.com/lm-sys/RouteLLM"
+"requesty","Requesty AI Gateway","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://www.requesty.ai/pricing"
+"replicate","Replicate","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://replicate.com/pricing"
+"reasoning-traces-replay-paper","Reasoning Traces Paper","GRÜN","DOCUMENTED_ONLY","","False","False","Forschungsquelle","https://arxiv.org/abs/2608.09867"
+"ramalama","RamaLama","GRÜN","PENDING_LIVE_TEST","","False","True","Lokaler Endpunkt","https://github.com/containers/ramalama"
+"qwen-chat","Qwen Chat","GELB","PENDING_REACHABILITY","","False","unklar","Nur Reachability","https://chat.qwen.ai"
+"puter-js","Puter.js","GELB","PENDING_REACHABILITY","","True","unklar","Nur Reachability","https://github.com/HeyPuter/puter"
+"portkey-gateway","Portkey AI Gateway","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://github.com/Portkey-AI/gateway"
+"pollinations","Pollinations.AI","GRÜN","PENDING_LIVE_TEST","","False","True","Anonymer Test möglich","https://gen.pollinations.ai"
+"playwright-mcp","Playwright MCP","GRÜN","PENDING_REACHABILITY","","False","True","MCP/stdio","https://github.com/microsoft/playwright-mcp"
+"plano","Plano","GRÜN","PENDING_LIVE_TEST","","False","True","Lokaler Endpunkt","https://github.com/katanemo/plano"
+"pipedream-mcp","Pipedream MCP","GRÜN","PENDING_REACHABILITY","","False","True","OAuth nötig","https://pipedream.com/docs/connect/mcp"
+"oracle-oci-genai","Oracle OCI Generative AI","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://www.oracle.com/artificial-intelligence/generative-ai/generative-ai-service/"
+"openrouter-chat","OpenRouter Chat","GRÜN","PENDING_REACHABILITY","","False","True","Browser-Session","https://openrouter.ai/chat"
+"openrouter","OpenRouter","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://openrouter.ai"
+"opencode-zen","OpenCode Zen","GELB","PENDING_REACHABILITY","","False","unklar","Nur Reachability","https://opencode.ai/zen"
+"opencode-console-breach","OpenCode Console Breach","SCHWARZ","SKIPPED (illegal)","","True","False","Illegal; nur dokumentieren","https://techcrunch.com/2026/10/19/hackers-hit-ai-coding-tool-opencode-running-up-charges-on-users-ai-accounts"
+"openai-rosalind-academic-plan","OpenAI Rosalind Academic Plan","GRÜN","PENDING_REACHABILITY","","False","True","Grant/Web","https://openai.com/rosalind"
+"openai-researcher-access","OpenAI Researcher Access Program","GRÜN","PENDING_REACHABILITY","","False","True","Grant/API","https://openai.com/form/researcher-access-program"
+"openai-api-server-via-codex","OpenAI API Server via Codex","ROT","SKIPPED (ToS-Risiko)","","True","False","Reverse-Engineered; nicht testen","https://github.com/hotchpotch/openai-api-server-via-codex"
+"openai-api","OpenAI API","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://platform.openai.com/docs/api-reference"
+"open-webui","Open WebUI","GRÜN","PENDING_LIVE_TEST","","False","True","Lokaler Endpunkt","https://github.com/open-webui/open-webui"
+"onnxruntime-web","ONNX Runtime Web","GRÜN","PENDING_REACHABILITY","","False","True","Browser-only","https://onnxruntime.ai/docs/tutorials/web"
+"one-hub","One-Hub","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://github.com/MartialBE/one-hub"
+"one-api","one-api","GELB","PENDING_REACHABILITY","","False","unklar","Nur Reachability","https://github.com/songquanpeng/one-api"
+"omniroute","OmniRoute","GELB","PENDING_REACHABILITY","","True","unklar","Nur Reachability","https://github.com/diegosouzapw/OmniRoute"
+"ollama-cloud","Ollama Cloud","GRÜN","SKIPPED (kein Key)","","False","True","API-Key nötig","https://docs.ollama.com/cloud"
+"ollama","Ollama","GRÜN","PENDING_LIVE_TEST","","False","True","Lokaler Endpunkt /v1/models","https://ollama.com"
+```
+
+---
+
+### `bridge_selection.json`
+
+```json
+[
+  {
+    "zielprovider": "Qwen",
+    "bridge_id": "qwengate",
+    "bridge_url": "https://github.com/youssefvdel/qwengate",
+    "selected": true,
+    "begruendung": "Einzige Qwen-Web-Bridge; aktiv, lokal, dokumentierter Browser-Session-Auth-Weg. ToS-Grauzone.",
+    "restrisiko": "hoch",
+    "auth_weg": "browser_session mit dediziertem Qwen-Account"
+  },
+  {
+    "zielprovider": "Cursor",
+    "bridge_id": "composer-api",
+    "bridge_url": "https://github.com/standardagents/composer-api",
+    "selected": true,
+    "begruendung": "Lokale Cursor-Bridge; dokumentierter User-API-Key; Reverse-Engineered-Web bleibt ToS-kritisch.",
+    "restrisiko": "hoch",
+    "auth_weg": "Cursor User-API-Key aus Dashboard/Integrations"
+  },
+  {
+    "zielprovider": "ChatGPT",
+    "bridge_id": "openai-api-server-via-codex",
+    "bridge_url": "https://github.com/hotchpotch/openai-api-server-via-codex",
+    "selected": true,
+    "begruendung": "Besser dokumentierter Auth-Weg als ZeroKey; nutzt eigenes ChatGPT-Codex-Login. Inoffiziell und ToS-unklar.",
+    "restrisiko": "hoch",
+    "auth_weg": "codex login / ~/.codex/auth.json"
+  },
+  {
+    "zielprovider": "Claude",
+    "bridge_id": "webmodel",
+    "bridge_url": "https://github.com/linuxhsj/WebModel",
+    "selected": true,
+    "begruendung": "Einzige sichtbare Claude-Web-Bridge; ca. 7 Monate ohne Commit, daher hohes Wartungs- und ToS-Risiko.",
+    "restrisiko": "hoch",
+    "auth_weg": "interaktiver Browser-Login / Session-Cookie"
+  },
+  {
+    "zielprovider": "Gemini",
+    "bridge_id": "webai-to-api",
+    "bridge_url": "https://github.com/Amm1rr/WebAI-to-API",
+    "selected": true,
+    "begruendung": "Aktiv gepflegt, lokal, dokumentierter Cookie-/Login-Weg; Reverse-Engineered-Web und Cookie-Bypass bleiben ToS-kritisch.",
+    "restrisiko": "hoch",
+    "auth_weg": "Playwright-Login oder konfigurierte Cookies"
+  },
+  {
+    "zielprovider": "DeepSeek",
+    "bridge_id": "webmodel",
+    "bridge_url": "https://github.com/linuxhsj/WebModel",
+    "selected": true,
+    "begruendung": "Einzige sichtbare DeepSeek-Web-Bridge; veraltet und ToS-kritisch.",
+    "restrisiko": "hoch",
+    "auth_weg": "interaktiver Browser-Login / Session-Cookie"
+  },
+  {
+    "zielprovider": "Grok",
+    "bridge_id": null,
+    "bridge_url": null,
+    "selected": false,
+    "begruendung": "Keine Webclient-Bridge in der Quelle; offizielle xAI-API ist kein Bridge-Kandidat.",
+    "restrisiko": "n/a",
+    "auth_weg": null
+  }
+]
+```
+
+---
+
+### `docker-compose.yml`
+
+```yaml
+name: ai-provider-suite
+
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: aips-litellm
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - "./litellm_config.yaml:/app/config.yaml:ro"
+    environment:
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-local-change-me}"
+    restart: unless-stopped
+
+  # ToS-Risiko-Bridges: nur mit Profil "tos-risk" starten.
+  qwengate:
+    profiles: ["tos-risk"]
+    build:
+      context: ./bridges/qwengate
+    container_name: aips-qwengate
+    ports:
+      - "127.0.0.1:8088:8088"
+    environment:
+      QWENGATE_API_KEY: "${QWENGATE_API_KEY:-}"
+    restart: unless-stopped
+
+  composer-api:
+    profiles: ["tos-risk"]
+    build:
+      context: ./bridges/composer-api
+    container_name: aips-composer-api
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      CURSOR_API_KEY: "${CURSOR_API_KEY:-}"
+    restart: unless-stopped
+
+  codex-api:
+    profiles: ["tos-risk"]
+    build:
+      context: ./bridges/openai-api-server-via-codex
+    container_name: aips-codex-api
+    ports:
+      - "127.0.0.1:8091:8091"
+    environment:
+      CODEX_API_KEY: "${CODEX_API_KEY:-}"
+    restart: unless-stopped
+
+  webmodel:
+    profiles: ["tos-risk"]
+    build:
+      context: ./bridges/webmodel
+    container_name: aips-webmodel
+    ports:
+      - "127.0.0.1:8092:8092"
+    environment:
+      WEBMODEL_API_KEY: "${WEBMODEL_API_KEY:-}"
+    restart: unless-stopped
+
+  webai-to-api:
+    profiles: ["tos-risk"]
+    build:
+      context: ./bridges/webai-to-api
+    container_name: aips-webai-to-api
+    ports:
+      - "127.0.0.1:8093:8093"
+    environment:
+      WEBAI_TO_API_KEY: "${WEBAI_TO_API_KEY:-}"
+    restart: unless-stopped
+```
+
+---
+
+### `litellm_config.yaml`
+
+```yaml
+model_list:
+  - model_name: qwen-web
+    litellm_params:
+      model: openai/qwen-web
+      api_base: http://qwengate:8088/v1
+      api_key: os.environ/QWENGATE_API_KEY
+
+  - model_name: cursor-composer
+    litellm_params:
+      model: openai/cursor-composer
+      api_base: http://composer-api:8090/v1
+      api_key: os.environ/CURSOR_API_KEY
+
+  - model_name: chatgpt-codex
+    litellm_params:
+      model: openai/chatgpt-codex
+      api_base: http://codex-api:8091/v1
+      api_key: os.environ/CODEX_API_KEY
+
+  - model_name: claude-web
+    litellm_params:
+      model: openai/claude-web
+      api_base: http://webmodel:8092/v1
+      api_key: os.environ/WEBMODEL_API_KEY
+
+  - model_name: deepseek-web
+    litellm_params:
+      model: openai/deepseek-web
+      api_base: http://webmodel:8092/v1
+      api_key: os.environ/WEBMODEL_API_KEY
+
+  - model_name: gemini-web
+    litellm_params:
+      model: openai/gemini-web
+      api_base: http://webai-to-api:8093/v1
+      api_key: os.environ/WEBAI_TO_API_KEY
+
+router_settings:
+  routing_strategy: simple-shuffle
+  num_retries: 1
+  timeout: 60
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  drop_params: true
+```
+
+---
+
+### `start-all.ps1`
+
+```powershell
+param(
+    [switch]$IncludeTosRiskBridges
+)
+
+$ErrorActionPreference = "Stop"
+
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    throw "Docker wurde nicht gefunden. Docker Desktop installieren und starten."
+}
+
+& docker info *> $null
+if ($LASTEXITCODE -ne 0) {
+    throw "Docker Desktop läuft nicht. Bitte starten und erneut versuchen."
+}
+
+$composeArgs = @("compose")
+if ($IncludeTosRiskBridges) {
+    Write-Warning "ToS-Risiko-Bridges werden gestartet. Nur mit eigenen Accounts und nach eigener ToS-Prüfung verwenden."
+    $composeArgs += @("--profile", "tos-risk")
+}
+$composeArgs += @("up", "-d")
+
+& docker @composeArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "docker compose up ist fehlgeschlagen."
+}
+
+Write-Host "Warte auf LiteLLM-Router ..."
+$ready = $false
+for ($i = 0; $i -lt 30; $i++) {
+    try {
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:4000/health/liveliness" -TimeoutSec 2 -UseBasicParsing
+        if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
+            $ready = $true
+            break
+        }
+    } catch {
+        Start-Sleep -Seconds 1
+    }
+}
+
+if (-not $ready) {
+    Write-Warning "LiteLLM ist noch nicht bereit. Logs prüfen: docker compose logs litellm"
+}
+
+Write-Host ""
+Write-Host "Zentrale Endpunkte:"
+Write-Host "  LiteLLM API:      http://127.0.0.1:4000/v1"
+Write-Host "  LiteLLM Health:   http://127.0.0.1:4000/health/liveliness"
+Write-Host ""
+Write-Host "Bridge-Dashboards (nur falls -IncludeTosRiskBridges gesetzt):"
+Write-Host "  QwenGate:         http://127.0.0.1:8088"
+Write-Host "  composer-api:     http://127.0.0.1:8090"
+Write-Host "  codex-api:        http://127.0.0.1:8091"
+Write-Host "  WebModel:         http://127.0.0.1:8092"
+Write-Host "  WebAI-to-API:     http://127.0.0.1:8093"
+Write-Host ""
+Write-Host "Stop: .\stop-all.ps1"
+```
+
+---
+
+### `stop-all.ps1`
+
+```powershell
+$ErrorActionPreference = "Stop"
+
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    throw "Docker wurde nicht gefunden."
+}
+
+& docker compose --profile tos-risk down --remove-orphans
+if ($LASTEXITCODE -ne 0) {
+    throw "docker compose down ist fehlgeschlagen."
+}
+
+Write-Host "Alle Container der ai-provider-suite wurden gestoppt."
+```
+
+---
+
+### `README.md`
+
+```markdown
+# AI-Provider-Suite
+
+## Voraussetzungen
+
+- Windows 11
+- PowerShell 5.1 oder PowerShell 7
+- Docker Desktop
+- Python 3.11+
+- Node.js ≥ 20 (nur für einzelne Bridges nötig)
+
+## Ordnerstruktur
+
+```text
+%USERPROFILE%\Desktop\ai-provider-suite\
+  classification.json
+  test_results.csv
+  bridge_selection.json
+  docker-compose.yml
+  litellm_config.yaml
+  start-all.ps1
+  stop-all.ps1
+  README.md
+  REPORT.md
+  SECURITY.md
+  tools\
+    parse_and_classify.py
+    run_tests.py
+  bridges\
+    qwengate\
+    composer-api\
+    openai-api-server-via-codex\
+    webmodel\
+    webai-to-api\
+```
+
+## Startreihenfolge
+
+1. `ai_provider(2).txt` nach `%USERPROFILE%\Downloads\ai_provider(2).txt` legen.
+2. `python tools\parse_and_classify.py`
+3. `python tools\run_tests.py`
+4. `.env.example` nach `.env` kopieren und Platzhalter setzen.
+5. Nur Router starten:
+   ```powershell
+   .\start-all.ps1
+   ```
+6. Optional ToS-Risiko-Bridges starten:
+   ```powershell
+   .\start-all.ps1 -IncludeTosRiskBridges
+   ```
+7. Stoppen:
+   ```powershell
+   .\stop-all.ps1
+   ```
+
+## Zentrale Endpunkte
+
+- LiteLLM API: `http://127.0.0.1:4000/v1`
+- Health: `http://127.0.0.1:4000/health/liveliness`
+
+## Keys und Cookies hinterlegen
+
+Niemals echte Werte in Dateien committen. `.env` verwenden:
+
+```dotenv
+LITELLM_MASTER_KEY=sk-local-change-me
+QWENGATE_API_KEY=<DEIN_KEY>
+CURSOR_API_KEY=<DEIN_KEY>
+CODEX_API_KEY=<DEIN_KEY>
+WEBMODEL_API_KEY=<DEIN_KEY>
+WEBAI_TO_API_KEY=<DEIN_KEY>
+```
+
+Session-Cookies nur über die jeweilige lokale Bridge-Oberfläche eintragen. Cookies wie Passwörter behandeln.
+
+## Bridge-Repos
+
+Die `bridges\*`-Ordner sind Build-Kontexte. Klone die jeweiligen Repos vor dem Start:
+
+```powershell
+git clone https://github.com/youssefvdel/qwengate bridges\qwengate
+git clone https://github.com/standardagents/composer-api bridges\composer-api
+git clone https://github.com/hotchpotch/openai-api-server-via-codex bridges\openai-api-server-via-codex
+git clone https://github.com/linuxhsj/WebModel bridges\webmodel
+git clone https://github.com/Amm1rr/WebAI-to-API bridges\webai-to-api
+```
+
+Prüfe vorher die Dockerfiles und ToS der Zielprovider.
+
+## Sicherheitshinweise
+
+- Nur `127.0.0.1`-Portbindungen.
+- Keine Hauptaccounts für Bridges verwenden.
+- Keine kommerzielle Nutzung von „personal use“-Tools.
+- ROT/SCHWARZ nicht testen.
+- GELB nur auf Reachability prüfen.
+```
+
+---
+
+### `REPORT.md`
+
+```markdown
+# AI-Provider-Report
+
+## Executive Summary
+
+Aus der eingeblendeten Quelle wurden 62 vollständige Provider-Blöcke ausgewertet. Die Datei endet mitten in `Ollama`.
+
+| Klasse | Anzahl |
+|---|---:|
+| GRÜN | 47 |
+| GELB | 8 |
+| ROT | 6 |
+| SCHWARZ | 1 |
+| **Gesamt** | **62** |
+
+## Top 10 sofort nutzbar (GRÜN)
+
+| Provider | Typ | Warum |
+|---|---|---|
+| OpenRouter | Gateway | Offizielle API, ':free'-Modelle |
+| Ollama | Lokal | MIT, lokale Runtime |
+| vLLM | Lokal | GPU-Inferenz, OpenAI-kompatibel |
+| SGLang | Lokal | GPU-Inferenz, OpenAI-kompatibel |
+| Open WebUI | Lokal | Self-hosted UI |
+| Pollinations.AI | Keyless | Anonymer Mini-Test möglich |
+| Requesty | Gateway | 200 RPD Free |
+| SambaNova Cloud | API | 20 RPD Free |
+| SiliconFlow | API | Free-Modelle, Realname-Hürden |
+| Z.ai GLM API | API | Flash-Modelle kostenlos |
+
+## Top 10 kostenlose API-Keys (GRÜN)
+
+| Provider | Free-Tier | Einschränkung |
+|---|---|---|
+| OpenRouter | dauerhaft | 50 RPD ohne Credit-Kauf |
+| Requesty | dauerhaft | 200 RPD |
+| SambaNova Cloud | dauerhaft | 20 RPD |
+| SiliconFlow | dauerhaft | Realname nötig |
+| Z.ai GLM API | dauerhaft | nur Flash-Modelle |
+| Vercel AI Gateway | 5 USD/Monat | nur Free-Tier-Modelle |
+| ZenMux | kein Free-Tier | pay-as-you-go |
+| xAI Grok API | trial | prepaid |
+| Oracle OCI GenAI | trial | 300 USD / 30 Tage |
+| Ollama Cloud | trial | kleines Startguthaben |
+
+## Lokale Engines (GRÜN)
+
+| Provider | Lizenz/Modell | Hinweis |
+|---|---|---|
+| Ollama | MIT | Standard-Lokal-Runtime |
+| vLLM | Apache-2.0 | GPU-Cluster |
+| SGLang | Apache-2.0 | GPU-Server |
+| TensorRT LLM | Apache-2.0 | NVIDIA-only |
+| TabbyAPI | AGPL-3.0 | ExLlamaV3 |
+| RamaLama | MIT | Containerisiert |
+| WebLLM | Apache-2.0 | Browser/WebGPU |
+| wllama | MIT | Browser/WASM |
+| Transformers.js | Apache-2.0 | ONNX im Browser |
+| ONNX Runtime Web | MIT | Browser/Node |
+
+## Gateways (GRÜN)
+
+| Provider | Hinweis |
+|---|---|
+| OpenRouter | Großer Katalog, Free-Modelle |
+| Vercel AI Gateway | 5 USD/Monat Free-Credits |
+| Requesty | 600+ Modelle, 200 RPD Free |
+| Portkey Gateway | Self-hosted, MIT |
+| Uni-API | Self-hosted, Apache-2.0 |
+| One-Hub | Aktiver one-api-Fork |
+| Plano | AI-Proxy, Apache-2.0 |
+| vLLM Semantic Router | Intent-Routing |
+| ZenMux | Pay-as-you-go |
+| TensorZero | eingestellt, nicht für Neu-Deployments |
+
+## MCP-Server (GRÜN)
+
+| Provider | Transport | Auth |
+|---|---|---|
+| Zapier MCP | HTTP | API-Key/OAuth |
+| Supabase MCP | HTTP | OAuth |
+| Playwright MCP | stdio | keine |
+| Pipedream MCP | HTTP/SSE | OAuth |
+| ToolHive | MCP-Runtime | lokal |
+| Smithery | Registry/Hosting | je Server |
+
+## Forschung/Grants (GRÜN)
+
+| Provider | Art |
+|---|---|
+| OpenAI Rosalind Academic Plan | Research Grant |
+| OpenAI Researcher Access Program | API-Credits |
+| RouteLLM | Forschungs-Routing |
+| Truffle Security HF-Scan | Forschungsquelle |
+| Practical Secrets Extraction Paper | Forschungsquelle |
+| Reasoning Traces Paper | Forschungsquelle |
+
+## GELB – ToS-Grauzone
+
+| Provider | Grund |
+|---|---|
+| WebNN API | Preview, nicht produktionsreif |
+| Stagehand | Web-Automation, Tier C |
+| Skyvern | Web-Automation, Tier C |
+| Qwen Chat | Datenpolitik/Anmeldung unklar |
+| Puter.js | ToS nur personal/non-commercial |
+| OpenCode Zen | Free-Modelle clientgebunden, Dauer unklar |
+| one-api | seit 2025 kein Commit |
+| OmniRoute | Subscription-Bridge + TLS-Fingerprinting |
+
+**Warnung:** GELB nur auf Erreichbarkeit prüfen. Keine echten API-Calls ohne eigene ToS-Prüfung.
+
+## ROT – nicht testen
+
+| Provider | Grund |
+|---|---|
+| QwenGate | Webclient-Automation |
+| composer-api | Reverse-Engineered-Web |
+| ZeroKey | ChatGPT-Web-Automation, Lizenz unklar |
+| WebModel | Web-Account-Bindung, veraltet |
+| WebAI-to-API | Reverse-Engineered-Web + Cookie-Bypass |
+| OpenAI API Server via Codex | Inoffizielles Codex-Backend |
+
+Diese Provider wurden **nicht getestet** und sind nur dokumentiert.
+
+## SCHWARZ – illegal
+
+| Provider | Grund |
+|---|---|
+| OpenCode Console Breach | Kompromittierte Fremd-Keys; illegal |
+
+**Nur Warnung:** Keine Links zu Exploits, keine Nutzung gestohlener Keys. Nutzung ist strafbar.
+
+## Statistik
+
+| Merkmal | Anzahl |
+|---|---:|
+| Provider gesamt | 62 |
+| Mit URL | 62 |
+| GRÜN | 47 |
+| GELB | 8 |
+| ROT | 6 |
+| SCHWARZ | 1 |
+| Getestet | 0 (in dieser Antwort) |
+| SKIPPED (ToS/illegal) | 7 |
+```
+
+---
+
+### `SECURITY.md`
+
+```markdown
+# Sicherheitsregeln
+
+1. **Niemals Hauptaccount für Bridges verwenden.** Dedizierte Wegwerf-Accounts nutzen.
+2. **Bridges nur auf `127.0.0.1` binden.** Kein `0.0.0.0`.
+3. **Keine kommerzielle Nutzung von „personal use“-Tools.** ToS beachten.
+4. **Session-Cookies wie Passwörter behandeln.** Nicht loggen, nicht committen.
+5. **Keine gestohlenen Keys nutzen.** Strafbar und ToS-widrig.
+6. **ROT/SCHWARZ nicht testen.** SCHWARZ nur dokumentieren.
+7. **GELB nur Reachability.** Keine echten API-Calls ohne Prüfung.
+8. **Keine Secrets in Configs/Reports.** Platzhalter verwenden.
+9. **Bridge-Logins nur manuell.** Keine automatisierten fremden Accounts.
+10. **Docker-Logs prüfen.** Keine Tokens in Logs ausgeben.
+```
+
+---
+
+### `tools/parse_and_classify.py`
+
+```python
+from __future__ import annotations
+import json, re
+from pathlib import Path
+
+SRC = Path.home() / "Downloads" / "ai_provider(2).txt"
+OUT = Path(__file__).resolve().parent.parent / "classification.json"
+
+RISKY_CATS = {"webclient_automation", "web_cookie_bypass", "reverse_engineered_web"}
+
+def parse_blocks(text: str):
+    parts = re.split(r"(?m)^##\s+", text)
+    for part in parts[1:]:
+        lines = part.splitlines()
+        name = lines[0].strip()
+        body = "\n".join(lines[1:])
+        def field(key):
+            m = re.search(rf"\*\*{re.escape(key)}:\*\*\s*([^|\n]+)", body, re.I)
+            return m.group(1).strip() if m else ""
+        cats = [c.strip() for c in field("kategorien").split(",") if c.strip()]
+        flags = field("flags")
+        riskant = bool(re.search(r"riskant\s*=\s*True", flags, re.I))
+        empf = "unklar" if re.search(r"empfehlenswert\s*=\s*unklar", flags, re.I) else bool(re.search(r"empfehlenswert\s*=\s*True", flags, re.I))
+        yield {
+            "name": name,
+            "id": field("id"),
+            "url": field("url"),
+            "kategorien": cats,
+            "verbindungsart": field("verbindungsart"),
+            "auth_typ": field("auth_typ") or None,
+            "free_tier_typ": field("free_tier_typ") or None,
+            "riskant": riskant,
+            "empfehlenswert": empf,
+            "flags_raw": flags,
+        }
+
+def classify(p):
+    cats = set(p["kategorien"])
+    flags = p["flags_raw"].lower()
+    if "anonym_pseudo_key" in cats and ("illegal" in flags or "nicht_erlaubt" in flags):
+        return "SCHWARZ"
+    if (p["riskant"] and (cats & RISKY_CATS)) or "illegal" in flags:
+        return "ROT"
+    if p["riskant"] or p["empfehlenswert"] == "unklar":
+        return "GELB"
+    return "GRÜN"
+
+def main():
+    text = SRC.read_text(encoding="utf-8")
+    out = []
+    for p in parse_blocks(text):
+        out.append({
+            "id": p["id"],
+            "name": p["name"],
+            "security_class": classify(p),
+            "riskant": p["riskant"],
+            "empfehlenswert": p["empfehlenswert"],
+            "verbindungsart": p["verbindungsart"],
+            "auth_typ": p["auth_typ"],
+            "free_tier_typ": p["free_tier_typ"],
+            "url": p["url"],
+            "note": "automatisch klassifiziert",
+        })
+    OUT.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"{len(out)} Provider geschrieben: {OUT}")
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+### `tools/run_tests.py`
+
+```python
+from __future__ import annotations
+import csv, json, os, re
+from pathlib import Path
+import requests
+
+ROOT = Path(__file__).resolve().parent.parent
+CLASSIFICATION = ROOT / "classification.json"
+OUT = ROOT / "test_results.csv"
+TIMEOUT = 10
+
+ENV_MAP = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "requesty": "REQUESTY_API_KEY",
+    "sambanova-cloud": "SAMBANOVA_API_KEY",
+    "siliconflow": "SILICONFLOW_API_KEY",
+    "zai-glm-api": "ZAI_API_KEY",
+    "vercel-ai-gateway": "VERCEL_AI_GATEWAY_API_KEY",
+    "zenmux": "ZENMUX_API_KEY",
+    "xai-grok-api": "XAI_API_KEY",
+    "openai-api": "OPENAI_API_KEY",
+    "together-ai": "TOGETHER_API_KEY",
+    "runpod": "RUNPOD_API_KEY",
+    "replicate": "REPLICATE_API_TOKEN",
+    "oracle-oci-genai": "OCI_GENAI_API_KEY",
+    "ollama-cloud": "OLLAMA_API_KEY",
+}
+
+def reachability(url: str):
+    try:
+        r = requests.head(url, timeout=TIMEOUT, allow_redirects=True)
+        if r.status_code in (405, 403, 400):
+            r = requests.get(url, timeout=TIMEOUT, allow_redirects=True)
+        return r.status_code, ""
+    except Exception as e:
+        return "", str(e)[:180]
+
+def main():
+    providers = json.loads(CLASSIFICATION.read_text(encoding="utf-8"))
+    rows = []
+    for p in providers:
+        cls = p["security_class"]
+        url = p.get("url") or ""
+        status, code, note = "PENDING", "", ""
+        if cls == "SCHWARZ":
+            status, note = "SKIPPED (illegal)", "nur dokumentiert"
+        elif cls == "ROT":
+            status, note = "SKIPPED (ToS-Risiko)", "nicht getestet"
+        elif cls == "GELB":
+            if url:
+                code, err = reachability(url)
+                status = "REACHABILITY_OK" if code and int(code) < 500 else "REACHABILITY_FAIL"
+                note = "nur Reachability" + (f"; {err}" if err else "")
+            else:
+                status, note = "SKIPPED (keine URL)", ""
+        else:
+            auth = (p.get("auth_typ") or "").lower()
+            if auth == "api_key":
+                env = ENV_MAP.get(p["id"], p["id"].upper().replace("-", "_") + "_API_KEY")
+                if not os.environ.get(env):
+                    status, note = "SKIPPED (kein Key)", f"Env {env} nicht gesetzt"
+                else:
+                    code, err = reachability(url)
+                    status, note = "REACHABILITY_OK", "Key vorhanden; API-Call manuell prüfen"
+            elif url:
+                code, err = reachability(url)
+                status = "REACHABILITY_OK" if code and int(code) < 500 else "REACHABILITY_FAIL"
+                note = err
+            else:
+                status, note = "SKIPPED (keine URL)", ""
+        rows.append({
+            "id": p["id"], "name": p["name"], "kategorie": cls,
+            "status": status, "http_code": code,
+            "risky": p["riskant"], "empfohlen": p["empfehlenswert"],
+            "note": note, "url": url,
+        })
+    with OUT.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["id","name","kategorie","status","http_code","risky","empfohlen","note","url"])
+        w.writeheader()
+        w.writerows(rows)
+    print(f"{len(rows)} Zeilen geschrieben: {OUT}")
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## 4. Ausführungshinweise
+
+1. Ordner anlegen:
+   ```powershell
+   mkdir "$env:USERPROFILE\Desktop\ai-provider-suite"
+   ```
+2. Dateien aus dieser Antwort dort speichern.
+3. `ai_provider(2).txt` nach `%USERPROFILE%\Downloads\ai_provider(2).txt` legen.
+4. Parser ausführen:
+   ```powershell
+   cd "$env:USERPROFILE\Desktop\ai-provider-suite"
+   python tools\parse_and_classify.py
+   ```
+5. Tests ausführen:
+   ```powershell
+   python tools\run_tests.py
+   ```
+6. `.env` anlegen:
+   ```powershell
+   Copy-Item .env.example .env
+   notepad .env
+   ```
+7. Starten:
+   ```powershell
+   .\start-all.ps1
+   ```
+8. Optional ToS-Risiko-Bridges:
+   ```powershell
+   .\start-all.ps1 -IncludeTosRiskBridges
+   ```
+9. Stoppen:
+   ```powershell
+   .\stop-all.ps1
+   ```
+
+---
+
+## 5. Offene Punkte
+
+- **Keine Live-Netzwerktests in dieser Antwort:** `test_results.csv` ist Initialstatus. `run_tests.py` führt HEAD/GET mit 10 s Timeout aus.
+- **Keine echten Bridge-Logins:** Web-Bridges benötigen Session-Cookies oder OAuth. Das muss der Nutzer manuell mit eigenen Wegwerf-Accounts tun.
+- **Bridge-Build-Kontexte fehlen:** `docker-compose.yml` verweist auf `./bridges/<id>`. Die Repos müssen vorher geklont werden; ich habe keine Docker-Images erfunden.
+- **Datei endet mitten in `Ollama`:** Die eingeblendete Quelle enthält 62 vollständige Blöcke, nicht 350. Der Parser verarbeitet lokal die vollständige Datei.
+- **ROT/SCHWARZ nicht getestet:** Entspricht den harten Regeln. SCHWARZ ist nur dokumentiert.

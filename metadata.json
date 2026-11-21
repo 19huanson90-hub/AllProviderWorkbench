@@ -1,0 +1,6 @@
+{
+  "name": "AI-Provider-Suite Workbench",
+  "description": "Analyse, Sicherheitsklassifikation (GRÜN/GELB/ROT/SCHWARZ), ToS-konforme Reachability-Tests, Bridge-Konsolidierung und Windows-11/Docker-Suite-Generator für KI-Provider-Verzeichnisse.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
