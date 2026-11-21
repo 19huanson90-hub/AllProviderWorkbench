@@ -14,6 +14,48 @@ export interface LocalBridgeStartPlan {
   args: string[];
   commandDisplay: string;
   reason: string;
+  needsNpmInstall?: boolean;
+  extraEnv?: Record<string, string>;
+}
+
+/**
+ * Resolves npm execution safely across Windows 11 (Node 20.12+/22+/26 CVE-2024-27980 blocks
+ * direct spawn/execFile of `.cmd` files without shell). Prefers invoking Node directly with
+ * `npm-cli.js` beside `process.execPath` (zero shell, zero EINVAL), falling back to
+ * `cmd.exe /d /s /c npm ...` with strictly internal hardcoded arguments.
+ */
+export function resolveNpmInvocation(
+  npmArgs: string[],
+  platform: NodeJS.Platform = process.platform,
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env
+): { bin: string; args: string[]; display: string } {
+  const display = `npm ${npmArgs.join(' ')}`;
+  if (platform !== 'win32') {
+    return { bin: 'npm', args: npmArgs, display };
+  }
+
+  const nodeDir = path.dirname(execPath);
+  const candidates = [
+    path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    env.APPDATA ? path.join(env.APPDATA, 'npm', 'node_modules', 'npm', 'bin', 'npm-cli.js') : '',
+    env.ProgramFiles
+      ? path.join(env.ProgramFiles, 'nodejs', 'node_modules', 'npm', 'bin', 'npm-cli.js')
+      : '',
+  ].filter(Boolean);
+
+  for (const cliPath of candidates) {
+    try {
+      if (fs.existsSync(cliPath)) {
+        return { bin: execPath, args: [cliPath, ...npmArgs], display };
+      }
+    } catch {
+      // ignore fs access issues
+    }
+  }
+
+  const comspec = env.ComSpec || 'cmd.exe';
+  return { bin: comspec, args: ['/d', '/s', '/c', 'npm', ...npmArgs], display };
 }
 
 /**
@@ -37,15 +79,45 @@ export function detectLocalBridgeStartPlan(localDir: string, port: number): Loca
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
         scripts?: Record<string, string>;
         main?: string;
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
       };
-      if (pkg.scripts?.start) {
-        const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+      const hasDeps =
+        (pkg.dependencies && Object.keys(pkg.dependencies).length > 0) ||
+        (pkg.devDependencies && Object.keys(pkg.devDependencies).length > 0);
+      const needsNpmInstall = Boolean(hasDeps && !fs.existsSync(path.join(localDir, 'node_modules')));
+
+      if (pkg.scripts?.['start:node'] && pkg.scripts?.start && /\bbun\b/i.test(pkg.scripts.start)) {
+        const inv = resolveNpmInvocation(['run', 'start:node']);
         return {
           runtime: 'node',
-          bin: npmBin,
-          args: ['start'],
-          commandDisplay: `HOST=127.0.0.1 PORT=${port} npm start`,
+          bin: inv.bin,
+          args: inv.args,
+          commandDisplay: `HOST=127.0.0.1 PORT=${port} ${inv.display}`,
+          reason: `package.json nutzt bun fuer start — waehle Node-kompatibles Skript start:node (${pkg.scripts['start:node']}).`,
+          needsNpmInstall,
+        };
+      }
+      if (pkg.scripts?.start) {
+        const inv = resolveNpmInvocation(['start']);
+        return {
+          runtime: 'node',
+          bin: inv.bin,
+          args: inv.args,
+          commandDisplay: `HOST=127.0.0.1 PORT=${port} ${inv.display}`,
           reason: `package.json mit start-Skript erkannt (${pkg.scripts.start}).`,
+          needsNpmInstall,
+        };
+      }
+      if (pkg.scripts?.dev) {
+        const inv = resolveNpmInvocation(['run', 'dev']);
+        return {
+          runtime: 'node',
+          bin: inv.bin,
+          args: inv.args,
+          commandDisplay: `HOST=127.0.0.1 PORT=${port} ${inv.display}`,
+          reason: `package.json mit dev-Skript erkannt (${pkg.scripts.dev}).`,
+          needsNpmInstall,
         };
       }
       if (pkg.main && fs.existsSync(path.join(localDir, pkg.main))) {
@@ -55,17 +127,30 @@ export function detectLocalBridgeStartPlan(localDir: string, port: number): Loca
           args: [pkg.main],
           commandDisplay: `HOST=127.0.0.1 PORT=${port} node ${pkg.main}`,
           reason: `package.json Einstiegspunkt ${pkg.main} erkannt.`,
+          needsNpmInstall,
         };
+      }
+      for (const jsEntry of ['index.js', 'server.js', 'app.js', 'dist/index.js']) {
+        if (fs.existsSync(path.join(localDir, jsEntry))) {
+          return {
+            runtime: 'node',
+            bin: process.execPath,
+            args: [jsEntry],
+            commandDisplay: `HOST=127.0.0.1 PORT=${port} node ${jsEntry}`,
+            reason: `Node.js-Einstiegspunkt ${jsEntry} erkannt.`,
+            needsNpmInstall,
+          };
+        }
       }
     } catch {
       // ignore malformed package.json
     }
   }
 
-  const pyEntries = ['main.py', 'app.py', 'server.py', 'run.py'];
+  const pyBin = process.platform === 'win32' ? 'python' : 'python3';
+  const pyEntries = ['main.py', 'app.py', 'server.py', 'run.py', 'api.py'];
   for (const entry of pyEntries) {
     if (fs.existsSync(path.join(localDir, entry))) {
-      const pyBin = process.platform === 'win32' ? 'python' : 'python3';
       return {
         runtime: 'python',
         bin: pyBin,
@@ -76,13 +161,75 @@ export function detectLocalBridgeStartPlan(localDir: string, port: number): Loca
     }
   }
 
+  // Subdirectory Python entrypoints (verified e.g. WebAI-to-API: src/run.py, CatGPT-Gateway: src/api/server.py)
+  if (fs.existsSync(path.join(localDir, 'src', 'run.py'))) {
+    return {
+      runtime: 'python',
+      bin: pyBin,
+      args: ['src/run.py', '--host', '127.0.0.1', '--port', String(port)],
+      commandDisplay: `${pyBin} src/run.py --host 127.0.0.1 --port ${port}`,
+      reason: 'Python-Einstiegspunkt src/run.py erkannt (WebAI-to-API Layout).',
+      extraEnv: { PYTHONPATH: path.join(localDir, 'src'), PYTHONUNBUFFERED: '1' },
+    };
+  }
+  if (fs.existsSync(path.join(localDir, 'src', 'api', 'server.py'))) {
+    return {
+      runtime: 'python',
+      bin: pyBin,
+      args: ['-m', 'src.api.server'],
+      commandDisplay: `HOST=127.0.0.1 PORT=${port} ${pyBin} -m src.api.server`,
+      reason: 'Python-Modul src.api.server erkannt (CatGPT-Gateway Layout).',
+      extraEnv: { USE_XVFB: 'false', PYTHONUNBUFFERED: '1' },
+    };
+  }
+  if (fs.existsSync(path.join(localDir, 'src', 'main.py'))) {
+    return {
+      runtime: 'python',
+      bin: pyBin,
+      args: ['src/main.py'],
+      commandDisplay: `HOST=127.0.0.1 PORT=${port} ${pyBin} src/main.py`,
+      reason: 'Python-Einstiegspunkt src/main.py erkannt.',
+      extraEnv: { PYTHONPATH: path.join(localDir, 'src'), PYTHONUNBUFFERED: '1' },
+    };
+  }
+
   if (fs.existsSync(path.join(localDir, 'go.mod'))) {
+    // Check whether root has .go files; otherwise resolve ./cmd/<subpkg> (e.g. openai-api-server-via-codex)
+    let hasRootGo = false;
+    try {
+      hasRootGo = fs.readdirSync(localDir).some((f) => f.endsWith('.go'));
+    } catch {
+      // ignore
+    }
+    let goTarget = '.';
+    if (!hasRootGo) {
+      const cmdDir = path.join(localDir, 'cmd');
+      if (fs.existsSync(cmdDir)) {
+        try {
+          const subdirs = fs
+            .readdirSync(cmdDir, { withFileTypes: true })
+            .filter((d) => d.isDirectory());
+          for (const sub of subdirs) {
+            const subPath = path.join(cmdDir, sub.name);
+            if (fs.readdirSync(subPath).some((f) => f.endsWith('.go'))) {
+              goTarget = `./cmd/${sub.name}`;
+              break;
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
     return {
       runtime: 'go',
       bin: 'go',
-      args: ['run', '.'],
-      commandDisplay: `HOST=127.0.0.1 PORT=${port} go run .`,
-      reason: 'Go-Modul (go.mod) erkannt.',
+      args: ['run', goTarget],
+      commandDisplay: `SERVER_HOST=127.0.0.1 SERVER_PORT=${port} PORT=${port} go run ${goTarget}`,
+      reason:
+        goTarget === '.'
+          ? 'Go-Modul (go.mod mit Root-Go-Dateien) erkannt.'
+          : `Go-Modul (go.mod) mit Einstiegspunkt ${goTarget} erkannt.`,
     };
   }
 
@@ -138,9 +285,21 @@ export function buildBridgeManualCommands(selection: BridgeSelectionEntry): {
   return { powershellStart, powershellTest, curlTest };
 }
 
-async function checkBinaryAvailable(bin: string, versionArgs: string[] = ['--version']): Promise<boolean> {
+async function checkPlanBinaryAvailable(plan: LocalBridgeStartPlan): Promise<boolean> {
+  if (!plan.bin) return false;
+  // Running Node executable itself is guaranteed available
+  if (plan.bin === process.execPath) return true;
+  if (plan.runtime === 'node' && /cmd(\.exe)?$/i.test(path.basename(plan.bin))) {
+    try {
+      await execFileAsync(plan.bin, ['/d', '/s', '/c', 'npm', '--version'], { timeout: 4000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const versionArgs = plan.runtime === 'go' ? ['version'] : ['--version'];
   try {
-    await execFileAsync(bin, versionArgs, { timeout: 3500 });
+    await execFileAsync(plan.bin, versionArgs, { timeout: 3500 });
     return true;
   } catch {
     return false;
@@ -210,6 +369,7 @@ export async function probeLoopbackPort(port: number): Promise<{
 /**
  * Manages explicit, user-triggered execution of allowlisted bridges ONLY (Hard Rules 1, 3, 4, 5).
  * Never auto-starts any bridge on boot; strictly binds loopback 127.0.0.1:<port>.
+ * Never falsely reports `running` unless `127.0.0.1:<port>` actually responds to a live probe.
  */
 export class BridgeProcessManager {
   private states = new Map<string, BridgeRuntimeState>();
@@ -269,6 +429,50 @@ export class BridgeProcessManager {
     }
   }
 
+  private async runNpmInstall(bridgeId: string, localDir: string): Promise<{ ok: boolean; error?: string }> {
+    const inv = resolveNpmInvocation(['install', '--no-audit', '--no-fund']);
+    this.appendLog(bridgeId, `node_modules fehlt — installiere Abhaengigkeiten (${inv.display}) ...`);
+
+    return new Promise((resolve) => {
+      let finished = false;
+      const done = (result: { ok: boolean; error?: string }) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+
+      const installer = spawn(inv.bin, inv.args, {
+        cwd: localDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+      });
+
+      const timer = setTimeout(() => {
+        try {
+          installer.kill('SIGTERM');
+        } catch {
+          // ignore
+        }
+        done({ ok: false, error: 'npm install Zeitueberschreitung nach 90 Sekunden.' });
+      }, 90000);
+
+      installer.stdout?.on('data', (chunk: Buffer) => this.appendLog(bridgeId, chunk.toString('utf8')));
+      installer.stderr?.on('data', (chunk: Buffer) => this.appendLog(bridgeId, chunk.toString('utf8')));
+      installer.on('error', (err) => {
+        done({ ok: false, error: `npm install Prozessfehler: ${err.message}` });
+      });
+      installer.on('exit', (code) => {
+        if (code === 0) {
+          this.appendLog(bridgeId, 'npm install erfolgreich abgeschlossen.');
+          done({ ok: true });
+        } else {
+          done({ ok: false, error: `npm install fehlgeschlagen (Exit-Code ${code ?? 'null'}).` });
+        }
+      });
+    });
+  }
+
   async executeBridge(
     selection: BridgeSelectionEntry,
     repo: AllowlistedBridgeRepo,
@@ -290,13 +494,19 @@ export class BridgeProcessManager {
     }
     const st = this.states.get(bridgeId)!;
 
-    // If already running, probe and return current status
-    if (st.status === 'running' && this.children.has(bridgeId)) {
+    // If a child process already exists, probe honestly before deciding whether to keep or restart
+    if (this.children.has(bridgeId)) {
       const probe = await probeLoopbackPort(port);
       st.lastProbeOk = probe.ok;
       st.lastProbeStatus = probe.statusText;
       st.lastProbeLatencyMs = probe.latencyMs;
-      return st;
+      if (probe.ok) {
+        st.status = 'running';
+        st.error = null;
+        return st;
+      }
+      // Clean up stale non-responsive child before fresh restart
+      await this.stopBridge(bridgeId, composeDir);
     }
 
     // Reset previous error & logs for fresh run
@@ -360,18 +570,20 @@ export class BridgeProcessManager {
         );
         if (stdout) this.appendLog(bridgeId, stdout);
         if (stderr) this.appendLog(bridgeId, stderr);
-        st.status = 'running';
         st.startedAt = new Date().toISOString();
         const probe = await probeLoopbackPort(port);
         st.lastProbeOk = probe.ok;
         st.lastProbeStatus = probe.statusText;
         st.lastProbeLatencyMs = probe.latencyMs;
-        this.appendLog(
-          bridgeId,
-          probe.ok
-            ? `Loopback-Check OK: ${probe.url} -> ${probe.statusText} (${probe.latencyMs}ms)`
-            : `Container gestartet; Loopback-Check noch ausstehend (${probe.statusText}) — bitte ggf. Auth/Erstlogin laut Anleitung abschliessen.`
-        );
+        if (probe.ok) {
+          st.status = 'running';
+          st.error = null;
+          this.appendLog(bridgeId, `Loopback-Check OK: ${probe.url} -> ${probe.statusText} (${probe.latencyMs}ms)`);
+        } else {
+          st.status = 'error';
+          st.error = `Container gestartet, aber 127.0.0.1:${port} antwortet nicht (${probe.statusText}). Ggf. Erstlogin/Env pruefen und "Loopback pruefen" klicken.`;
+          this.appendLog(bridgeId, st.error);
+        }
         return st;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message.slice(0, 260) : 'Docker-Start fehlgeschlagen.';
@@ -398,8 +610,7 @@ export class BridgeProcessManager {
       return st;
     }
 
-    const versionArgs = plan.runtime === 'go' ? ['version'] : ['--version'];
-    const binOk = await checkBinaryAvailable(plan.bin, versionArgs);
+    const binOk = await checkPlanBinaryAvailable(plan);
     if (!binOk) {
       st.status = 'error';
       st.mode = 'none';
@@ -408,18 +619,39 @@ export class BridgeProcessManager {
       return st;
     }
 
+    if (plan.runtime === 'node' && plan.needsNpmInstall) {
+      const installRes = await this.runNpmInstall(bridgeId, localDir);
+      if (!installRes.ok) {
+        st.status = 'error';
+        st.mode = 'none';
+        st.error = `${installRes.error || 'npm install fehlgeschlagen.'} Details siehe Live-Logs.`;
+        this.appendLog(bridgeId, `FEHLER: ${st.error}`);
+        return st;
+      }
+    }
+
     this.appendLog(bridgeId, `Starte lokalen Prozess (strikt 127.0.0.1:${port}): ${plan.commandDisplay}`);
 
-    // Note: spawn without shell:true (command injection safe)
+    let childExited = false;
+    let exitCode: number | null = null;
+
     const child = spawn(plan.bin, plan.args, {
       cwd: localDir,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
         HOST: '127.0.0.1',
+        SERVER_HOST: '127.0.0.1',
+        OPENAI_VIA_CODEX_HOST: '127.0.0.1',
         BIND_ADDRESS: '127.0.0.1',
         PORT: String(port),
+        SERVER_PORT: String(port),
+        API_PORT: String(port),
+        OPENAI_VIA_CODEX_PORT: String(port),
         LISTEN_ADDR: `127.0.0.1:${port}`,
+        SKIP_ACCOUNT_MENU: '1',
+        NON_INTERACTIVE: '1',
+        ...(plan.extraEnv || {}),
       },
     });
 
@@ -427,7 +659,7 @@ export class BridgeProcessManager {
     st.mode = 'native';
     st.pid = child.pid ?? null;
     st.startedAt = new Date().toISOString();
-    st.status = 'running';
+    st.status = 'starting';
 
     child.stdout?.on('data', (chunk: Buffer) => {
       this.appendLog(bridgeId, chunk.toString('utf8'));
@@ -436,6 +668,7 @@ export class BridgeProcessManager {
       this.appendLog(bridgeId, chunk.toString('utf8'));
     });
     child.on('error', (err) => {
+      childExited = true;
       this.children.delete(bridgeId);
       st.pid = null;
       st.status = 'error';
@@ -443,12 +676,14 @@ export class BridgeProcessManager {
       this.appendLog(bridgeId, st.error);
     });
     child.on('exit', (code, signal) => {
+      childExited = true;
+      exitCode = code;
       this.children.delete(bridgeId);
       st.pid = null;
       if (st.status !== 'stopped') {
         st.status = code === 0 ? 'stopped' : 'error';
         if (code !== 0) {
-          st.error = `Prozess beendet (Exit-Code ${code ?? 'null'}, Signal ${signal ?? 'none'}). Evtl. fehlen lokale Abhaengigkeiten (npm install / pip install) oder Auth-Cookies.`;
+          st.error = `Prozess beendet (Exit-Code ${code ?? 'null'}, Signal ${signal ?? 'none'}). Moegliche Ursache: fehlende Abhaengigkeiten (pip/go/npm) oder benoetigte Auth-Cookies/Env-Variablen — siehe Live-Logs.`;
         }
       }
       this.appendLog(
@@ -457,19 +692,50 @@ export class BridgeProcessManager {
       );
     });
 
-    // Wait briefly (1.8s) to detect immediate startup crashes or verify loopback readiness
-    await new Promise((r) => setTimeout(r, 1800));
-    if (st.status === 'running') {
+    // Honest startup readiness polling: Go (`go run`) needs up to ~24s on first Windows compile, Node/Python ~10.5s
+    const maxAttempts = plan.runtime === 'go' ? 32 : 14;
+    const waitSeconds = Math.round((maxAttempts * 750) / 1000);
+    let latestProbe: Awaited<ReturnType<typeof probeLoopbackPort>> | null = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await new Promise((r) => setTimeout(r, 750));
+      if (childExited || (st.status as BridgeRuntimeState['status']) === 'stopped') break;
       const probe = await probeLoopbackPort(port);
+      latestProbe = probe;
       st.lastProbeOk = probe.ok;
       st.lastProbeStatus = probe.statusText;
       st.lastProbeLatencyMs = probe.latencyMs;
       if (probe.ok) {
-        this.appendLog(bridgeId, `Loopback-Check OK: ${probe.url} -> ${probe.statusText} (${probe.latencyMs}ms)`);
-      } else {
-        this.appendLog(bridgeId, `Prozess laeuft (PID ${st.pid}), Port 127.0.0.1:${port} antwortet noch nicht (${probe.statusText}).`);
+        st.status = 'running';
+        st.error = null;
+        this.appendLog(
+          bridgeId,
+          `Loopback-Check OK: ${probe.url} -> ${probe.statusText} (${probe.latencyMs}ms)`
+        );
+        return st;
       }
     }
+
+    if (childExited) {
+      st.status = 'error';
+      const joinedLogs = st.logs.join('\n');
+      if (/deepseek-auth\.json/i.test(joinedLogs)) {
+        st.error = `DeepSeek-Erstlogin erforderlich (deepseek-auth.json fehlt). Einmalig in PowerShell ausfuehren: cd bridges\\${bridgeId} ; npm run auth`;
+      } else if (/auth_file_not_found|\.codex[/\\]auth\.json/i.test(joinedLogs)) {
+        st.error =
+          'Codex-Erstlogin erforderlich (~/.codex/auth.json fehlt). Einmalig im Terminal `codex login` ausfuehren und Bridge neu starten.';
+      } else if (/ModuleNotFoundError|No module named/i.test(joinedLogs)) {
+        st.error = `Python-Abhaengigkeiten fehlen. In PowerShell ausfuehren: cd bridges\\${bridgeId} ; pip install -r requirements.txt`;
+      } else if (!st.error) {
+        st.error = `Prozess hat sich vor Port-Oeffnung auf 127.0.0.1:${port} beendet (Exit-Code ${exitCode ?? 'null'}). Siehe Live-Logs.`;
+      }
+      return st;
+    }
+
+    // Child process is still alive, but port 127.0.0.1:<port> never opened -> NEVER claim LÄUFT!
+    st.status = 'error';
+    const probeDetail = latestProbe?.statusText || 'Verbindung abgelehnt';
+    st.error = `Prozess laeuft (PID ${st.pid ?? '?'}), aber 127.0.0.1:${port} antwortet nach ${waitSeconds} s nicht (${probeDetail}). Falls Go/Python noch kompiliert oder startet, kurz warten und "Loopback pruefen" klicken.`;
+    this.appendLog(bridgeId, `WARNUNG: ${st.error}`);
 
     return st;
   }
@@ -531,10 +797,18 @@ export class BridgeProcessManager {
     st.lastProbeOk = probe.ok;
     st.lastProbeStatus = probe.statusText;
     st.lastProbeLatencyMs = probe.latencyMs;
-    if (probe.ok && st.status === 'stopped') {
+
+    if (probe.ok) {
       st.status = 'running';
-      st.mode = 'native';
+      st.error = null;
+      if (st.mode === 'none') st.mode = 'native';
+    } else if (st.status === 'running' || st.status === 'starting') {
+      // Honest downgrade: never display LÄUFT when 127.0.0.1:<port> fails probe
+      const hasAliveChild = this.children.has(bridgeId);
+      st.status = hasAliveChild ? 'error' : 'stopped';
+      st.error = `Port 127.0.0.1:${st.port} ist nicht erreichbar (${probe.statusText}).`;
     }
+
     this.appendLog(
       bridgeId,
       probe.ok

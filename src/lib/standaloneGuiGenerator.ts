@@ -495,15 +495,20 @@ export function generateStandaloneGuiHtml(): string {
       const proto = String(p.protokoll || '').trim();
       const url = String(p.url || '').trim();
       const cats = Array.isArray(p.kategorien) ? p.kategorien : [];
-      const idName = (String(p.id || '') + ' ' + String(p.name || '')).toLowerCase();
-      const isLocalOpenAi = cats.includes('lokal_self_hosted') && /\\b(ollama|lm-?studio|vllm|llama-?cpp|localai|jan|koboldcpp|litellm)\\b/i.test(idName);
+      const id = String(p.id || '').toLowerCase();
+      const idName = (id + ' ' + String(p.name || '')).toLowerCase();
+      const isLocalOpenAi = cats.includes('lokal_self_hosted') && (/\\b(ollama|lm-?studio|vllm|llama-?cpp|localai|jan|koboldcpp|litellm|mistral-?rs|textgen|xinference|tabbyapi|aphrodite|mlx-?lm|ramalama|exo)\\b/i.test(idName) || /openai_kompatibel/i.test(proto));
       if (/w3\\.org\\/tr\\//i.test(url) || (/browser-only|browser-sdk/i.test(verb) && !/openai_kompatibel/i.test(proto))) {
         return { kind: 'browser_only', label: 'Browser-Only / Web-Standard (kein HTTP-/v1-Endpunkt)', supportsOpenAi: false };
       }
       if (/anthropic-native|bedrock-converse|gemini-native/i.test(verb) && !/openai/i.test(proto + ' ' + verb)) {
         return { kind: 'native_rest', label: 'Proprietaere REST-API (' + verb + ')', supportsOpenAi: false };
       }
-      if (!isLocalOpenAi && ((/^mcp\\b|sdk-eigen/i.test(verb) && !/openai_kompatibel/i.test(proto)) || (/github\\.com/i.test(url) && !/rest|openai|gateway/i.test(verb)))) {
+      const isNonChatPortal = /developer\\.amd\\.com|cohere\\.com\\/research|metr\\.org|registry\\.modelcontextprotocol\\.io|cvron\\.org/i.test(url) || id === 'amd-ai-developer-program' || id === 'cohere-labs';
+      if (isNonChatPortal) {
+        return { kind: 'mcp_or_sdk', label: 'Kredit-/Forschungs-Portal (kein direkter Chat-Endpunkt)', supportsOpenAi: false };
+      }
+      if (!isLocalOpenAi && ((/^mcp\\b|sdk-eigen/i.test(verb) && !/https?:\\/\\//i.test(verb)) || (/github\\.com/i.test(url) && !/rest|openai|gateway/i.test(verb)))) {
         return { kind: 'mcp_or_sdk', label: /^mcp\\b/i.test(verb) ? 'MCP-Server / Tool-Protokoll' : 'SDK / Repository / Lokales Tool', supportsOpenAi: false };
       }
       if (isLocalOpenAi || /rest|openai|gateway/i.test(verb) || /openai_kompatibel/i.test(proto)) {
@@ -516,27 +521,40 @@ export function generateStandaloneGuiHtml(): string {
     }
 
     function defaultApiBase(p, kindInfo) {
+      const k = kindInfo || classifyConnKind(p);
       const url = String(p.url || '').trim();
       const id = String(p.id || '').toLowerCase();
-      if (!kindInfo.supportsOpenAi) return url || 'http://127.0.0.1:11434';
+      const cats = Array.isArray(p.kategorien) ? p.kategorien : [];
+      if (!k.supportsOpenAi) return url || 'http://127.0.0.1:11434';
+      if (cats.includes('lokal_self_hosted')) {
+        if (id.includes('ollama')) return 'http://127.0.0.1:11434/v1';
+        if (id.includes('vllm')) return 'http://127.0.0.1:8000/v1';
+        if (id.includes('llama-cpp') || id.includes('llamacpp')) return 'http://127.0.0.1:8080/v1';
+        if (id.includes('litellm')) return 'http://127.0.0.1:4000/v1';
+        return 'http://127.0.0.1:1234/v1';
+      }
       const emb = String(p.verbindungsart || '').match(/\\(([a-z0-9.-]+\\.[a-z]{2,}\\/[a-z0-9/_-]*)/i);
       if (emb && emb[1]) {
         const c = emb[1].replace(/\\/+$/, '');
         return 'https://' + (c.endsWith('/openai') ? c + '/v1' : c);
       }
-      if (id.includes('ollama')) return 'http://127.0.0.1:11434/v1';
-      if (id.includes('lm-studio') || id.includes('lmstudio')) return 'http://127.0.0.1:1234/v1';
+      const descUrl = String(p.beschreibung || '').match(/https?:\\/\\/[a-z0-9.-]+\\/[a-z0-9/_-]*\\/v1\\b/i);
+      if (descUrl && descUrl[0]) return descUrl[0].replace(/\\/+$/, '');
+      if (id.includes('pollinations')) return 'https://text.pollinations.ai/openai';
+      if (id.includes('hack-club')) return 'https://ai.hackclub.com/proxy/v1';
+      if (id.includes('ovh')) return 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1';
       if (id.includes('openrouter')) return 'https://openrouter.ai/api/v1';
       if (id.includes('groq')) return 'https://api.groq.com/openai/v1';
       if (id.includes('cerebras')) return 'https://api.cerebras.ai/v1';
       if (id.includes('together')) return 'https://api.together.xyz/v1';
-      if (id.includes('mistral')) return 'https://api.mistral.ai/v1';
+      if (id.includes('mistral-la-plateforme') || id === 'mistral' || id === 'mistral-api') return 'https://api.mistral.ai/v1';
       if (id === 'deepseek' || id.includes('deepseek-api')) return 'https://api.deepseek.com/v1';
       if (id.includes('sambanova')) return 'https://api.sambanova.ai/v1';
       if (id.includes('siliconflow')) return 'https://api.siliconflow.com/v1';
       if (url.startsWith('http') && !url.includes('github.com')) {
         const clean = url.replace(/\\/+$/, '');
         if (/\\/v1(\\b|\\/)/i.test(clean)) return clean;
+        if (/\\/docs(\\/|$)/i.test(clean)) return clean;
         return clean + '/v1';
       }
       return url || 'http://127.0.0.1:11434/v1';
@@ -621,7 +639,7 @@ export function generateStandaloneGuiHtml(): string {
 
     function statusClass(st) {
       if (st === 'OK' || st === 'OK_API_PROBE' || st === 'REDIRECT') return 'st-ok';
-      if (st === 'WAF_PROTECTED') return 'st-waf';
+      if (st === 'WAF_PROTECTED' || st === 'AUTH_REQUIRED') return 'st-waf';
       if (st === 'HTTP_ERROR' || st === 'TIMEOUT' || st === 'NETWORK_ERROR') return 'st-err';
       return 'st-skip';
     }
@@ -634,13 +652,13 @@ export function generateStandaloneGuiHtml(): string {
         const r = state.results.get(p.id) || { id: p.id, name: p.name, status: 'PENDING', http_code: '-', note: '', url: p.url, executed: false };
         if (isUsable(p)) usable++;
         if (r.executed) tested++;
-        if (['OK','OK_API_PROBE','REDIRECT'].includes(r.status)) ok++;
+        if (['OK','OK_API_PROBE','REDIRECT','AUTH_REQUIRED'].includes(r.status)) ok++;
         else if (r.status === 'WAF_PROTECTED') waf++;
         else if (['HTTP_ERROR','TIMEOUT','NETWORK_ERROR'].includes(r.status)) err++;
 
         const tf = state.testFilter;
         if (tf === 'EXECUTED' && !r.executed) continue;
-        if (tf === 'OK' && !['OK','OK_API_PROBE','REDIRECT'].includes(r.status)) continue;
+        if (tf === 'OK' && !['OK','OK_API_PROBE','REDIRECT','AUTH_REQUIRED'].includes(r.status)) continue;
         if (tf === 'WAF' && r.status !== 'WAF_PROTECTED') continue;
         if (tf === 'ERR' && !['HTTP_ERROR','TIMEOUT','NETWORK_ERROR'].includes(r.status)) continue;
         if (tf === 'SKIP' && !String(r.status).startsWith('SKIPPED')) continue;
@@ -648,7 +666,7 @@ export function generateStandaloneGuiHtml(): string {
         rows.push({ p, r });
       }
       document.getElementById('test-summary-bar').textContent =
-        'Abdeckung: ' + tested + ' / ' + usable + '  ·  OK/Redirect: ' + ok + '  ·  WAF: ' + waf + '  ·  Fehler: ' + err;
+        'Abdeckung: ' + tested + ' / ' + usable + '  ·  Erreichbar/Auth: ' + ok + '  ·  WAF: ' + waf + '  ·  Fehler: ' + err;
       document.getElementById('test-tbody').innerHTML = rows.map(({ p, r }) => {
         const c = normalizeClass(p);
         const u = isUsable(p);
@@ -1011,9 +1029,10 @@ export function generateStandaloneGuiHtml(): string {
 
     function updateChatHeader() {
       const mode = document.getElementById('chat-mode').value;
-      const base = document.getElementById('chat-base').value.trim();
+      const base = document.getElementById('chat-base').value.trim().replace(/\\/+$/, '');
       const model = document.getElementById('chat-model').value.trim() || 'default';
       let title = 'Direkt-Chat';
+      let chatCapable = true;
       if (mode === 'bridge') {
         const bid = document.getElementById('chat-bridge').value;
         const b = state.bridges.find((x) => x.bridge_id === bid);
@@ -1022,13 +1041,27 @@ export function generateStandaloneGuiHtml(): string {
         const pid = document.getElementById('chat-provider').value;
         const p = state.providers.find((x) => x.id === pid);
         title = p ? p.name : 'Provider';
+        if (p) chatCapable = classifyConnKind(p).supportsOpenAi;
       } else if (mode === 'litellm') {
         title = 'LiteLLM-Router (GRÜN)';
       } else {
         title = 'Lokaler OpenAI-Server (127.0.0.1)';
       }
       document.getElementById('chat-active-title').textContent = title;
-      document.getElementById('chat-active-sub').textContent = base + '/chat/completions · Modell: ' + model;
+      document.getElementById('chat-active-sub').textContent = chatCapable
+        ? (base + '/chat/completions · Modell: ' + model)
+        : (base + ' · Kein direkter OpenAI-/chat/completions-Endpunkt');
+    }
+
+    function defaultChatModel(providerId, bridgeId) {
+      const bid = String(bridgeId || '').toLowerCase();
+      if (bid === 'grok-com-to-openai') return 'grok-fast';
+      if (bid === 'freedeepseekapi') return 'deepseek-chat';
+      if (bid === 'openai-api-server-via-codex') return 'gpt-5.4-mini';
+      const pid = String(providerId || '').toLowerCase();
+      if (pid.includes('pollinations')) return 'openai-fast';
+      if (pid.includes('ovh')) return 'gpt-oss-20b';
+      return 'default';
     }
 
     function syncChatModeUI() {
@@ -1036,17 +1069,21 @@ export function generateStandaloneGuiHtml(): string {
       document.getElementById('chat-bridge-wrap').classList.toggle('hidden', mode !== 'bridge');
       document.getElementById('chat-provider-wrap').classList.toggle('hidden', mode !== 'provider');
       const baseEl = document.getElementById('chat-base');
+      const modelEl = document.getElementById('chat-model');
       baseEl.readOnly = mode === 'bridge';
       if (mode === 'bridge') {
         const bid = document.getElementById('chat-bridge').value;
         const b = state.bridges.find((x) => x.bridge_id === bid);
         if (b && b.port) baseEl.value = 'http://127.0.0.1:' + b.port + '/v1';
+        modelEl.value = defaultChatModel('', bid);
       } else if (mode === 'provider') {
         const pid = document.getElementById('chat-provider').value;
         const p = state.providers.find((x) => x.id === pid);
-        if (p) baseEl.value = defaultApiBase(p);
+        if (p) baseEl.value = defaultApiBase(p, classifyConnKind(p));
+        modelEl.value = defaultChatModel(pid, '');
       } else if (mode === 'litellm') {
         baseEl.value = 'http://127.0.0.1:4000/v1';
+        modelEl.value = 'default';
       } else {
         if (!/^https?:\\/\\/(127\\.0\\.0\\.1|localhost)/i.test(baseEl.value)) {
           baseEl.value = 'http://127.0.0.1:11434/v1';
@@ -1062,9 +1099,13 @@ export function generateStandaloneGuiHtml(): string {
         '<option value="' + esc(b.bridge_id) + '">' + esc(b.zielprovider + ' — ' + b.bridge_id + ' (:' + b.port + ')') + '</option>'
       ).join('');
       const prSel = document.getElementById('chat-provider');
-      const usablePr = state.providers.filter((p) => isUsable(p));
+      const usablePr = state.providers.filter((p) => isUsable(p) && classifyConnKind(p).supportsOpenAi);
+      usablePr.sort((a, b) => {
+        const score = (x) => (normalizeClass(x) === 'GRUEN' ? 0 : 10) + (x.auth_typ === 'keine' ? 0 : 2);
+        return score(a) - score(b) || String(a.name || '').localeCompare(String(b.name || ''));
+      });
       prSel.innerHTML = usablePr.map((p) =>
-        '<option value="' + esc(p.id) + '">[' + esc(normalizeClass(p)) + '] ' + esc(p.name) + '</option>'
+        '<option value="' + esc(p.id) + '">[' + esc(normalizeClass(p)) + (p.auth_typ === 'keine' ? ' · Kein Key' : '') + '] ' + esc(p.name) + '</option>'
       ).join('');
       syncChatModeUI();
     }
@@ -1352,7 +1393,7 @@ function logBridge(id, msg) {
   if (st.logs.length > 140) st.logs = st.logs.slice(-140);
 }
 async function probeLocalPort(port) {
-  for (const pth of ['/v1/models', '/health', '/']) {
+  for (const pth of ['/v1/models', '/healthz', '/health', '/']) {
     const url = 'http://127.0.0.1:' + port + pth;
     try {
       const r = await fetchTimeout(url, { method: 'GET' }, 3000);
@@ -1360,6 +1401,22 @@ async function probeLocalPort(port) {
     } catch {}
   }
   return { ok: false, statusText: 'Port 127.0.0.1:' + port + ' antwortet nicht.', url: 'http://127.0.0.1:' + port + '/v1/models' };
+}
+function resolveSafeNpm(npmArgs) {
+  if (process.platform !== 'win32') return { bin: 'npm', args: npmArgs };
+  const npmCli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (fs.existsSync(npmCli)) return { bin: process.execPath, args: [npmCli, ...npmArgs] };
+  return { bin: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', 'npm', ...npmArgs] };
+}
+async function waitForLoopback(port, maxMs) {
+  const deadline = Date.now() + maxMs;
+  let last = { ok: false, statusText: 'Port 127.0.0.1:' + port + ' antwortet nicht.', url: 'http://127.0.0.1:' + port + '/v1/models' };
+  while (Date.now() < deadline) {
+    last = await probeLocalPort(port);
+    if (last.ok) return last;
+    await new Promise((r) => setTimeout(r, 750));
+  }
+  return last;
 }
 async function executeLocalBridge(id) {
   const b = allowBridges.get(id);
@@ -1389,39 +1446,117 @@ async function executeLocalBridge(id) {
     const { stdout, stderr } = await execFileAsync('docker', ['compose', '--profile', 'tos-risk', 'up', '-d', '--build', b.docker_service], { cwd: SUITE_DIR, timeout: 120000 });
     if (stdout) logBridge(id, stdout);
     if (stderr) logBridge(id, stderr);
-    st.status = 'running';
-    const pr = await probeLocalPort(b.port);
-    logBridge(id, pr.ok ? 'Loopback OK: ' + pr.statusText : 'Container laeuft; ' + pr.statusText);
+    const pr = await waitForLoopback(b.port, 9000);
+    if (pr.ok) {
+      st.status = 'running';
+      logBridge(id, 'Loopback OK: ' + pr.statusText);
+    } else {
+      st.status = 'error';
+      st.error = 'Container gestartet, aber ' + pr.statusText;
+      logBridge(id, st.error);
+    }
     return st;
   } catch {
     logBridge(id, 'Docker nicht aktiv — pruefe lokalen Direktstart ohne Docker.');
   }
-  let bin = null, args = [];
+  let bin = null, args = [], extraEnv = {}, isGoRuntime = false;
+  const pyBin = process.platform === 'win32' ? 'python' : 'python3';
   if (fs.existsSync(path.join(dir, 'package.json'))) {
-    bin = process.platform === 'win32' ? 'npm.cmd' : 'npm'; args = ['start'];
-  } else if (fs.existsSync(path.join(dir, 'main.py'))) {
-    bin = process.platform === 'win32' ? 'python' : 'python3'; args = ['main.py'];
-  } else if (fs.existsSync(path.join(dir, 'app.py'))) {
-    bin = process.platform === 'win32' ? 'python' : 'python3'; args = ['app.py'];
+    let pkg = {};
+    try { pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch {}
+    if (!fs.existsSync(path.join(dir, 'node_modules'))) {
+      const inst = resolveSafeNpm(['install', '--no-audit', '--no-fund']);
+      logBridge(id, 'Installiere Node-Abhaengigkeiten (npm install)...');
+      try {
+        await execFileAsync(inst.bin, inst.args, { cwd: dir, timeout: 120000 });
+        logBridge(id, 'npm install abgeschlossen.');
+      } catch (e) {
+        st.status = 'error';
+        st.error = 'npm install fehlgeschlagen: ' + (e.stderr || e.message || String(e)).slice(0, 200);
+        logBridge(id, st.error);
+        return st;
+      }
+    }
+    const startCmd = String((pkg.scripts && pkg.scripts.start) || '');
+    if (pkg.scripts && pkg.scripts['start:node'] && /\\bbun\\b/i.test(startCmd)) {
+      const run = resolveSafeNpm(['run', 'start:node']);
+      bin = run.bin; args = run.args;
+    } else if (pkg.scripts && pkg.scripts.start) {
+      const run = resolveSafeNpm(['start']);
+      bin = run.bin; args = run.args;
+    } else if (pkg.scripts && pkg.scripts.dev) {
+      const run = resolveSafeNpm(['run', 'dev']);
+      bin = run.bin; args = run.args;
+    } else {
+      const entry = ['index.js', 'server.js', 'app.js', 'dist/index.js'].find((f) => fs.existsSync(path.join(dir, f)));
+      if (entry) { bin = process.execPath; args = [entry]; }
+    }
+  } else if (fs.existsSync(path.join(dir, 'src', 'run.py'))) {
+    bin = pyBin; args = ['src/run.py', '--host', '127.0.0.1', '--port', String(b.port)];
+    extraEnv = { PYTHONPATH: path.join(dir, 'src'), PYTHONUNBUFFERED: '1' };
+  } else if (fs.existsSync(path.join(dir, 'src', 'api', 'server.py'))) {
+    bin = pyBin; args = ['-m', 'src.api.server'];
+    extraEnv = { USE_XVFB: 'false', PYTHONUNBUFFERED: '1' };
+  } else if (fs.existsSync(path.join(dir, 'src', 'main.py'))) {
+    bin = pyBin; args = ['src/main.py'];
+    extraEnv = { PYTHONPATH: path.join(dir, 'src'), PYTHONUNBUFFERED: '1' };
+  } else if (['main.py', 'app.py', 'server.py', 'run.py', 'api.py'].some((f) => fs.existsSync(path.join(dir, f)))) {
+    const pyEntry = ['main.py', 'app.py', 'server.py', 'run.py', 'api.py'].find((f) => fs.existsSync(path.join(dir, f)));
+    bin = pyBin; args = [pyEntry];
+    extraEnv = { PYTHONUNBUFFERED: '1' };
   } else if (fs.existsSync(path.join(dir, 'go.mod'))) {
-    bin = 'go'; args = ['run', '.'];
+    isGoRuntime = true;
+    const hasRootGo = fs.readdirSync(dir).some((f) => f.endsWith('.go') && !f.endsWith('_test.go'));
+    if (hasRootGo) {
+      bin = 'go'; args = ['run', '.'];
+    } else {
+      const cmdDir = path.join(dir, 'cmd');
+      if (fs.existsSync(cmdDir)) {
+        const sub = fs.readdirSync(cmdDir, { withFileTypes: true }).find((e) => e.isDirectory() && fs.readdirSync(path.join(cmdDir, e.name)).some((f) => f.endsWith('.go')));
+        if (sub) { bin = 'go'; args = ['run', './cmd/' + sub.name]; }
+      }
+    }
   }
   if (!bin) {
     st.status = 'error';
-    st.error = 'Docker laeuft nicht und kein Standard-Startpunkt (package.json/main.py/go.mod) erkannt. Bitte Docker Desktop starten.';
+    st.error = 'Docker laeuft nicht und kein Standard-Startpunkt (package.json/Python/go.mod) erkannt. Bitte Docker Desktop starten.';
     logBridge(id, st.error);
     return st;
   }
   try {
-    const child = spawn(bin, args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, HOST: '127.0.0.1', PORT: String(b.port), LISTEN_ADDR: '127.0.0.1:' + b.port } });
+    const childEnv = {
+      ...process.env,
+      HOST: '127.0.0.1',
+      SERVER_HOST: '127.0.0.1',
+      OPENAI_VIA_CODEX_HOST: '127.0.0.1',
+      BIND_ADDRESS: '127.0.0.1',
+      PORT: String(b.port),
+      SERVER_PORT: String(b.port),
+      API_PORT: String(b.port),
+      OPENAI_VIA_CODEX_PORT: String(b.port),
+      LISTEN_ADDR: '127.0.0.1:' + b.port,
+      SKIP_ACCOUNT_MENU: '1',
+      NON_INTERACTIVE: '1',
+      ...extraEnv,
+    };
+    const child = spawn(bin, args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv });
     bridgeChildren.set(id, child);
-    st.mode = 'native'; st.pid = child.pid || null; st.status = 'running';
-    logBridge(id, 'Gestartet: ' + bin + ' ' + args.join(' ') + ' (PID ' + st.pid + ', 127.0.0.1:' + b.port + ')');
+    st.mode = 'native'; st.pid = child.pid || null; st.status = 'starting';
+    logBridge(id, 'Starte: ' + bin + ' ' + args.join(' ') + ' (PID ' + st.pid + ', 127.0.0.1:' + b.port + ')');
     child.stdout?.on('data', (d) => logBridge(id, d.toString('utf8')));
     child.stderr?.on('data', (d) => logBridge(id, d.toString('utf8')));
     child.on('error', (err) => { st.status = 'error'; st.error = err.message; logBridge(id, 'Prozessfehler: ' + err.message); });
     child.on('exit', (code) => { bridgeChildren.delete(id); st.pid = null; if (st.status !== 'stopped') { st.status = code === 0 ? 'stopped' : 'error'; if (code !== 0) st.error = 'Prozess beendet (Exit ' + code + ').'; } logBridge(id, 'Beendet (Exit ' + code + ').'); });
-    await new Promise((r) => setTimeout(r, 1500));
+    const pr = await waitForLoopback(b.port, isGoRuntime ? 24000 : 10000);
+    if (pr.ok) {
+      st.status = 'running';
+      st.error = null;
+      logBridge(id, 'Loopback bereit: ' + pr.statusText);
+    } else if (st.status !== 'error') {
+      st.status = 'error';
+      st.error = 'Prozess gestartet, aber ' + pr.statusText + ' (Logs pruefen).';
+      logBridge(id, st.error);
+    }
     return st;
   } catch (e) {
     st.status = 'error';
@@ -1531,11 +1666,16 @@ async function run4PhaseTest(p, byokApiKey) {
     latencyMs = Date.now() - h0;
     httpCode = String(resp.status);
     const ok = resp.status >= 200 && resp.status < 400;
-    const waf = !ok && isWaf(resp.status, resp.headers);
+    const isAuth = resp.status === 401;
+    const waf = !ok && !isAuth && isWaf(resp.status, resp.headers);
     if (ok) {
       status = resp.url !== p.url ? 'REDIRECT' : 'OK';
       score += 25;
       phases.push({ phase: 'reachability', label: 'Phase 2: HTTP/TLS', status: 'pass', detail: 'HTTP ' + resp.status, durationMs: latencyMs });
+    } else if (isAuth) {
+      status = 'AUTH_REQUIRED';
+      score = 78;
+      phases.push({ phase: 'reachability', label: 'Phase 2: HTTP/TLS', status: 'warn', detail: 'HTTP 401 (Endpunkt aktiv, Auth/API-Key erforderlich)', durationMs: latencyMs });
     } else if (waf) {
       status = 'WAF_PROTECTED';
       score += 10;
@@ -1546,19 +1686,25 @@ async function run4PhaseTest(p, byokApiKey) {
       phases.push({ phase: 'reachability', label: 'Phase 2: HTTP/TLS', status: 'fail', detail: 'HTTP ' + resp.status, durationMs: latencyMs });
     }
 
+    const canProbeOnRoot404 = (resp.status === 404 || resp.status === 405) && /\\/v1\\b|\\/openai\\b/i.test(p.url);
     if (cls === 'GELB') {
       phases.push({ phase: 'protocol', label: 'Phase 3: API-Probe', status: 'skip', detail: 'GELB: nur Reachability (Ziel 2.3).' });
       score = Math.min(score, 74);
-    } else if ((ok || waf) && (p.auth_typ === 'keine' || byokApiKey) && !/github\\.com/i.test(p.url)) {
-      const probeBase = p.url.replace(/\\/+$/, '') + (p.url.endsWith('/v1') ? '' : '/v1');
+    } else if ((ok || waf || canProbeOnRoot404) && (p.auth_typ === 'keine' || byokApiKey) && !/github\\.com/i.test(p.url)) {
+      const probeBase = p.url.replace(/\\/+$/, '') + (/(\\/v1|\\/openai)$/i.test(p.url.replace(/\\/+$/, '')) ? '' : '/v1');
       const p0 = Date.now();
       try {
         const hdrs = { Accept: 'application/json' };
         if (byokApiKey) hdrs.Authorization = 'Bearer ' + byokApiKey;
-        const pr = await fetchTimeout(probeBase + '/models', { method: 'GET', headers: hdrs }, 6000);
+        let pr = await fetchTimeout(probeBase + '/models', { method: 'GET', headers: hdrs }, 6000);
+        if (!pr.ok && probeBase.endsWith('/openai')) {
+          const altPr = await fetchTimeout(probeBase.replace(/\\/openai$/, '') + '/models', { method: 'GET', headers: hdrs }, 6000);
+          if (altPr.ok) pr = altPr;
+        }
         if (pr.ok) {
           status = 'OK_API_PROBE';
-          score = Math.min(100, score + 10);
+          httpCode = String(pr.status);
+          score = Math.max(96, Math.min(100, score + 10));
           phases.push({ phase: 'protocol', label: 'Phase 3: API-Probe', status: 'pass', detail: 'GET /models -> HTTP ' + pr.status, durationMs: Date.now() - p0 });
         } else {
           phases.push({ phase: 'protocol', label: 'Phase 3: API-Probe', status: 'warn', detail: 'GET /models -> HTTP ' + pr.status, durationMs: Date.now() - p0 });
@@ -1567,7 +1713,7 @@ async function run4PhaseTest(p, byokApiKey) {
         phases.push({ phase: 'protocol', label: 'Phase 3: API-Probe', status: 'skip', detail: 'Standard-/v1/models nicht direkt offen.' });
       }
     } else {
-      phases.push({ phase: 'protocol', label: 'Phase 3: API-Probe', status: 'skip', detail: 'Kein Key / kein offener v1-Endpunkt.' });
+      phases.push({ phase: 'protocol', label: 'Phase 3: API-Probe', status: 'skip', detail: isAuth ? 'Auth erforderlich (HTTP 401).' : 'Kein Key / kein offener v1-Endpunkt.' });
     }
   } catch (e) {
     latencyMs = Date.now() - h0;
@@ -1695,7 +1841,13 @@ const server = http.createServer(async (req, res) => {
     if (!st) { sendJson(res, 404, { error: 'Bridge nicht gefunden.' }); return; }
     const pr = await probeLocalPort(st.port);
     logBridge(body.bridgeId, 'Loopback-Probe: ' + pr.statusText);
-    if (pr.ok && st.status === 'stopped') st.status = 'running';
+    if (pr.ok) {
+      st.status = 'running';
+      st.error = null;
+    } else if (st.status === 'running' || st.status === 'starting') {
+      st.status = 'error';
+      st.error = pr.statusText;
+    }
     sendJson(res, 200, { runtime: st, probe: pr, bridgeRuntimes: Array.from(bridgeStates.values()) });
     return;
   }
@@ -1705,7 +1857,7 @@ const server = http.createServer(async (req, res) => {
     const mode = body.targetType || 'provider';
     let baseUrl = '';
     if (mode === 'bridge') {
-      const b = bridgeById.get(body.bridgeId);
+      const b = allowBridges.get(body.bridgeId);
       if (!b || !b.port) { sendJson(res, 403, { ok: false, error: 'Bridge nicht auf Allowlist.' }); return; }
       baseUrl = 'http://127.0.0.1:' + b.port + '/v1';
     } else if (mode === 'provider') {
@@ -1730,12 +1882,27 @@ const server = http.createServer(async (req, res) => {
     const t0 = Date.now();
     try {
       if (pth === '/api/chat/models') {
-        const r = await fetchTimeout(baseUrl + '/models', { method: 'GET', headers }, 10000);
+        let r = await fetchTimeout(baseUrl + '/models', { method: 'GET', headers }, 10000);
+        if (!r.ok && baseUrl.endsWith('/openai')) {
+          const alt = await fetchTimeout(baseUrl.replace(/\\/openai$/, '') + '/models', { method: 'GET', headers }, 10000);
+          if (alt.ok) r = alt;
+        }
         const txt = (await r.text()).slice(0, 120000);
         let parsed = null; try { parsed = JSON.parse(txt); } catch {}
-        const list = Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed?.models) ? parsed.models : [];
-        const models = list.map((x) => (typeof x === 'string' ? x : (x.id || x.name || ''))).filter(Boolean).slice(0, 100);
-        sendJson(res, 200, { ok: r.ok, httpStatus: r.status, latencyMs: Date.now() - t0, models, error: r.ok ? undefined : ('HTTP ' + r.status) });
+        const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed?.models) ? parsed.models : [];
+        const nonChatRe = /(whisper|tts|nvr-tts|solaria|embed|bge-|rerank|stable-diffusion|sdxl|flux|dall-e|moderation|transcribe|\\basr\\b|\\bstt\\b|\\bocr\\b)/i;
+        const chatModels = [];
+        const allModels = [];
+        for (const item of list) {
+          const mid = typeof item === 'string' ? item.trim() : String(item?.id || item?.name || '').trim();
+          if (!mid || allModels.includes(mid)) continue;
+          allModels.push(mid);
+          const zeroCtx = typeof item === 'object' && item && item.context_length === 0 && item.max_completion_tokens === 0;
+          const nonTextOut = Array.isArray(item?.output_modalities) && !item.output_modalities.includes('text');
+          if (!zeroCtx && !nonTextOut && !nonChatRe.test(mid)) chatModels.push(mid);
+        }
+        const models = (chatModels.length > 0 ? chatModels : allModels).slice(0, 100);
+        sendJson(res, 200, { ok: r.ok, httpStatus: r.status, latencyMs: Date.now() - t0, models, chatModels: chatModels.slice(0, 100), error: r.ok ? undefined : ('HTTP ' + r.status) });
       } else {
         const msgs = [];
         if (body.systemPrompt) msgs.push({ role: 'system', content: String(body.systemPrompt).trim() });

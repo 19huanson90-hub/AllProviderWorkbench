@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { consolidateBridges } from './bridgeSelector.ts';
@@ -257,8 +258,10 @@ test('Multi-phase testEngine: WAF detection, Phase-4 scoring, analytics, and SSR
 
 import { buildBridgeManualCommands, detectLocalBridgeStartPlan } from './bridgeRunner.ts';
 import {
+  categorizeModelIds,
   extractChatCompletionReply,
   extractModelIds,
+  resolveDefaultChatModel,
   sanitizeChatMessages,
   validateChatTarget,
 } from './chatEngine.ts';
@@ -423,5 +426,414 @@ test('Standalone Windows-11 GUI bundles Chat-Fenster, bridge execution routes, a
     assert.ok(f.content.includes('/api/chat/send'), `${srvPath} must expose /api/chat/send`);
     assert.ok(f.content.includes('/api/chat/models'), `${srvPath} must expose /api/chat/models`);
   }
+
+  const mjs = files.find((f) => f.path === 'gui/local_gui_server.mjs')!;
+  assert.ok(!mjs.content.includes("'npm.cmd'"), 'local_gui_server.mjs must never spawn bare npm.cmd (Node 20.12+/26 EINVAL)');
+  assert.ok(mjs.content.includes('resolveSafeNpm'));
+  assert.ok(mjs.content.includes('waitForLoopback'));
 });
+
+import { resolveNpmInvocation } from './bridgeRunner.ts';
+import {
+  buildLocalImprovedPrompt,
+  computeNextRunAt,
+  createDefaultWorkspace,
+  exportProjectToMarkdown,
+  GROK_BRIDGE_CAPABILITIES,
+  GROK_BRIDGE_MODELS,
+  isJobDue,
+  parseSafeMarkdownBlocks,
+  retrieveProjectContext,
+  sanitizeSafeHttpUrl,
+  searchProjectEverything,
+  validateWorkspacePayload,
+  type NotebookProject,
+} from './notebookEngine.ts';
+
+test('Windows-11 regression fixes: mistral-rs, pollinations, hack-club-ai, non-chat portals, and safe npm invocation', () => {
+  const mistralRs = classified.find((p) => p.id === 'mistral-rs');
+  assert.ok(mistralRs, 'mistral-rs must exist in catalog');
+  assert.equal(classifyConnectionKind(mistralRs).supportsOpenAiEndpoints, true);
+  const mistralRsBase = buildConnectionSnippets(mistralRs).defaultApiBase;
+  assert.equal(mistralRsBase, 'http://127.0.0.1:1234/v1');
+  assert.equal(validateInvokeTarget(mistralRs, `${mistralRsBase}/chat/completions`).ok, true);
+
+  const mistralCloud = classified.find((p) => p.id === 'mistral-la-plateforme');
+  if (mistralCloud) {
+    const cloudBase = buildConnectionSnippets(mistralCloud).defaultApiBase;
+    assert.equal(cloudBase, 'https://api.mistral.ai/v1');
+  }
+
+  const pollinations = classified.find((p) => p.id === 'pollinations');
+  assert.ok(pollinations, 'pollinations must exist in catalog');
+  assert.equal(classifyConnectionKind(pollinations).supportsOpenAiEndpoints, true);
+  const pollBase = buildConnectionSnippets(pollinations).defaultApiBase;
+  assert.equal(pollBase, 'https://text.pollinations.ai/openai');
+  assert.equal(validateInvokeTarget(pollinations, `${pollBase}/chat/completions`).ok, true);
+
+  const hackClub = classified.find((p) => p.id === 'hack-club-ai');
+  if (hackClub) {
+    const hcBase = buildConnectionSnippets(hackClub).defaultApiBase;
+    assert.equal(hcBase, 'https://ai.hackclub.com/proxy/v1');
+  }
+
+  for (const nonChatId of ['webnn-api', 'amd-ai-developer-program', 'cohere-labs']) {
+    const prov = classified.find((p) => p.id === nonChatId);
+    assert.ok(prov, `${nonChatId} must exist in catalog`);
+    assert.equal(
+      classifyConnectionKind(prov).supportsOpenAiEndpoints,
+      false,
+      `${nonChatId} must not be classified as direct OpenAI chat endpoint`
+    );
+  }
+
+  const winNpm = resolveNpmInvocation(['start'], 'win32', 'C:\\nonexistent\\node.exe', {
+    ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+  });
+  assert.notEqual(winNpm.bin.toLowerCase(), 'npm.cmd', 'Must never spawn bare npm.cmd on Windows');
+  assert.ok(
+    winNpm.bin.toLowerCase().endsWith('cmd.exe') || winNpm.bin.toLowerCase().endsWith('node.exe')
+  );
+  assert.ok(winNpm.args.includes('start'));
+});
+
+test('NotebookEngine: cross-chat discovery, KB retrieval isolation, full-text search, and Markdown export', () => {
+  assert.equal(GROK_BRIDGE_MODELS.length, 5);
+  assert.ok(GROK_BRIDGE_CAPABILITIES.some((c) => c.id === 'web-sources' && c.supported));
+  assert.ok(GROK_BRIDGE_CAPABILITIES.some((c) => c.id === 'binary-office' && !c.supported));
+
+  const projectA: NotebookProject = {
+    id: 'proj-a',
+    name: 'Solar Architektur',
+    description: 'Projekt A',
+    instructions: 'Nutze immer Projekt-Fakten.',
+    crossChatMemoryEnabled: true,
+    knowledgeBaseEnabled: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    knowledgeDocs: [
+      {
+        id: 'doc-1',
+        title: 'Wechselrichter Spezifikation',
+        sourceType: 'note',
+        tags: ['hardware', 'pv'],
+        content: 'Der Hybrid-Wechselrichter unterstützt 12 kW Spitzenleistung und Modbus TCP auf Port 502.',
+        enabled: true,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        id: 'doc-disabled',
+        title: 'Veraltete Notiz',
+        sourceType: 'note',
+        tags: [],
+        content: 'Veralteter Modbus Port 9999 darf nicht injiziert werden.',
+        enabled: false,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+    chats: [
+      {
+        id: 'chat-1',
+        title: 'Batterie-Planung',
+        targetType: 'bridge',
+        bridgeId: 'grok-com-to-openai',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        messages: [
+          {
+            id: 'm1',
+            role: 'user',
+            content: 'Welchen Speicher haben wir gewählt?',
+            createdAt: '10:00:00',
+          },
+          {
+            id: 'm2',
+            role: 'assistant',
+            content: 'Wir haben den LiFePO4 Speicher mit 15 kWh Kapazität und CAN-Bus BMS festgelegt.',
+            createdAt: '10:00:05',
+          },
+        ],
+      },
+      {
+        id: 'chat-2',
+        title: 'Monitoring-Chat',
+        targetType: 'bridge',
+        bridgeId: 'grok-com-to-openai',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        messages: [],
+      },
+    ],
+    chronoJobs: [],
+  };
+
+  // Query from Chat 2 must discover both KB doc-1 (Modbus) and sibling Chat 1 (LiFePO4 15 kWh), while excluding disabled doc
+  const ctx = retrieveProjectContext({
+    project: projectA,
+    activeChatId: 'chat-2',
+    query: 'Wie verbinden wir den LiFePO4 Speicher mit dem Modbus Wechselrichter?',
+  });
+
+  assert.ok(ctx.knowledgeHits.some((h) => h.id === 'doc-1'), 'Enabled KB doc must be retrieved');
+  assert.ok(!ctx.knowledgeHits.some((h) => h.id === 'doc-disabled'), 'Disabled KB doc must never be retrieved');
+  assert.ok(ctx.chatHits.some((h) => h.id === 'chat-1'), 'Sibling chat must be discovered via cross-chat memory');
+  assert.ok(ctx.compiledSystemBlock.includes('15 kWh'));
+  assert.ok(ctx.compiledSystemBlock.includes('Port 502'));
+  assert.ok(!ctx.compiledSystemBlock.includes('9999'));
+
+  // Full-text search across chats + knowledge docs
+  const hits = searchProjectEverything(projectA, 'LiFePO4');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].sourceType, 'chat');
+  assert.equal(hits[0].id, 'chat-1');
+
+  const md = exportProjectToMarkdown(projectA);
+  assert.ok(md.includes('# Projekt / Notebook: Solar Architektur'));
+  assert.ok(md.includes('Wechselrichter Spezifikation'));
+  assert.ok(md.includes('Batterie-Planung'));
+});
+
+test('NotebookEngine: Chrono-Job scheduling, XSS-safe Markdown, secret-stripping validation, and prompt refiner', () => {
+  const baseDate = new Date('2026-06-01T08:00:00.000Z');
+
+  const intervalNext = computeNextRunAt(
+    { scheduleType: 'interval_min', intervalMinutes: 30, enabled: true, lastRunAt: null },
+    baseDate
+  );
+  assert.equal(intervalNext, '2026-06-01T08:30:00.000Z');
+
+  const onceNext = computeNextRunAt(
+    { scheduleType: 'once', runAtIso: '2026-06-01T09:00:00.000Z', enabled: true, lastRunAt: null },
+    baseDate
+  );
+  assert.equal(onceNext, '2026-06-01T09:00:00.000Z');
+
+  const dueJob = {
+    id: 'j1',
+    name: 'Morgen-Briefing',
+    prompt: 'Fasse neue Ereignisse zusammen.',
+    scheduleType: 'daily' as const,
+    timeOfDay: '09:00',
+    enabled: true,
+    saveToKnowledge: false,
+    includeSources: true,
+    targetType: 'bridge' as const,
+    bridgeId: 'grok-com-to-openai',
+    nextRunAt: '2026-06-01T07:55:00.000Z',
+    runCount: 0,
+    lastStatus: 'idle' as const,
+    createdAt: baseDate.toISOString(),
+  };
+  assert.equal(isJobDue(dueJob, baseDate), true);
+  assert.equal(isJobDue({ ...dueJob, enabled: false }, baseDate), false);
+  assert.equal(isJobDue({ ...dueJob, lastStatus: 'running' }, baseDate), false);
+
+  // XSS-safe URL & Markdown image parsing (Grok Imagine safe https vs blocked javascript/data)
+  assert.equal(sanitizeSafeHttpUrl('https://assets.grok.com/img/test.png'), 'https://assets.grok.com/img/test.png');
+  assert.equal(sanitizeSafeHttpUrl('javascript:alert(1)'), null);
+  assert.equal(sanitizeSafeHttpUrl('data:text/html,<script>alert(1)</script>'), null);
+
+  const blocks = parseSafeMarkdownBlocks(
+    '### Ergebnis\n![generated image](https://assets.grok.com/img/a.png)\n![bad](javascript:alert(1))\n```ts\nconst x = 1;\n```'
+  );
+  assert.ok(blocks.some((b) => b.type === 'heading' && b.text === 'Ergebnis'));
+  assert.ok(blocks.some((b) => b.type === 'image' && b.url === 'https://assets.grok.com/img/a.png'));
+  assert.ok(!blocks.some((b) => b.type === 'image' && b.url.includes('javascript:')));
+  assert.ok(blocks.some((b) => b.type === 'code' && b.language === 'ts'));
+
+  // Secret stripping in workspace persistence validation
+  const ws = createDefaultWorkspace();
+  const polluted = JSON.parse(JSON.stringify(ws)) as Record<string, unknown>;
+  (polluted.projects as Array<Record<string, unknown>>)[0].apiKey = 'sk-secret-never-persist';
+  const validated = validateWorkspacePayload(polluted);
+  assert.equal(validated.ok, true);
+  if (validated.ok) {
+    assert.ok(!JSON.stringify(validated.workspace).includes('sk-secret-never-persist'));
+  }
+
+  // Prompt refiner modes
+  const refined = buildLocalImprovedPrompt('Erkläre Grok Bridge', 'research', 'Grok Notebook');
+  assert.ok(refined.includes('Grok Notebook'));
+  assert.ok(refined.includes('belegten Fakten'));
+  const imagineRefined = buildLocalImprovedPrompt('Futuristisches Labor', 'imagine');
+  assert.ok(imagineRefined.includes('Grok Imagine'));
+});
+
+test('ChatEngine multimodal sanitization allows safe Base64 images and rejects SVG/invalid schemes', () => {
+  const validPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  const badSvg = 'data:image/svg+xml;base64,PHN2Zy8+';
+  const badJs = 'javascript:alert(1)';
+
+  const msgs = sanitizeChatMessages(
+    [{ role: 'user', content: 'Analysiere dieses Bild' }],
+    'System',
+    [validPng, badSvg, badJs]
+  );
+  assert.equal(msgs.length, 2);
+  assert.ok(Array.isArray(msgs[1].content), 'Last user message must contain multimodal content array');
+  if (Array.isArray(msgs[1].content)) {
+    assert.equal(msgs[1].content.length, 2, 'Only text + 1 valid PNG must remain (SVG and JS rejected)');
+    assert.equal(msgs[1].content[1].type, 'image_url');
+  }
+});
+
+test('Live-test scoring fixes: HTTP 401 AUTH_REQUIRED and OVH /v1 404 recovered by Phase-3 200', () => {
+  const mistral = classified.find((p) => p.id === 'mistral-la-plateforme')!;
+  const ovh = classified.find((p) => p.id === 'ovh-ai-endpoints')!;
+  assert.ok(mistral && ovh);
+
+  const auth401 = computePhase4Evaluation(
+    mistral,
+    [
+      { phase: 'dns', label: 'P1', status: 'pass', detail: 'ok' },
+      { phase: 'reachability', label: 'P2', status: 'warn', detail: 'HTTP 401 (Auth erforderlich)' },
+      { phase: 'protocol', label: 'P3', status: 'skip', detail: 'Auth erforderlich' },
+    ],
+    95,
+    '401',
+    false
+  );
+  assert.ok(auth401.healthScore >= 75, `Expected score >= 75 for HTTP 401, got ${auth401.healthScore}`);
+  assert.equal(auth401.readinessTier, 'BEREIT_MIT_KEY');
+
+  const ovhRecovered = computePhase4Evaluation(
+    ovh,
+    [
+      { phase: 'dns', label: 'P1', status: 'pass', detail: 'ok' },
+      { phase: 'reachability', label: 'P2', status: 'fail', detail: 'HTTP 404 auf /v1' },
+      { phase: 'protocol', label: 'P3', status: 'pass', detail: 'GET /v1/models -> HTTP 200' },
+    ],
+    140,
+    '200',
+    true
+  );
+  assert.ok(ovhRecovered.healthScore >= 90, `Expected score >= 90 when P3 /models passes, got ${ovhRecovered.healthScore}`);
+  assert.equal(ovhRecovered.readinessTier, 'SOFORT_NUTZBAR');
+
+  const mockRows = initialTests.map((r) =>
+    r.id === mistral.id
+      ? {
+          ...r,
+          executed: true,
+          status: 'AUTH_REQUIRED' as const,
+          http_code: '401',
+          readinessTier: 'BEREIT_MIT_KEY' as const,
+        }
+      : r
+  );
+  const analytics = analyzeTestResults(classified, mockRows);
+  const nokeyCluster = analytics.failureClusters.find((c) => c.key === 'nokey');
+  assert.ok((nokeyCluster?.count ?? 0) >= 1, 'AUTH_REQUIRED must count under nokey cluster');
+  assert.ok(analytics.readyWithKeyCount >= 1, 'AUTH_REQUIRED must count under readyWithKeyCount');
+  assert.equal(analytics.unreachableCount, 0, 'AUTH_REQUIRED must not count as unreachable');
+});
+
+test('ChatEngine: default models, OVH/Pollinations non-chat model filtering, and server-side WebNN guard', () => {
+  assert.equal(resolveDefaultChatModel('pollinations'), 'openai-fast');
+  assert.equal(resolveDefaultChatModel('ovh-ai-endpoints'), 'gpt-oss-20b');
+  assert.equal(resolveDefaultChatModel(undefined, 'grok-com-to-openai'), 'grok-fast');
+  assert.equal(resolveDefaultChatModel(undefined, 'freedeepseekapi'), 'deepseek-chat');
+  assert.equal(resolveDefaultChatModel(undefined, 'openai-api-server-via-codex'), 'gpt-5.4-mini');
+
+  const ovhModelsPayload = {
+    object: 'list',
+    data: [
+      { id: 'solaria-3', context_length: 0, max_completion_tokens: 0 },
+      { id: 'whisper-large-v3', context_length: 0, max_completion_tokens: 0 },
+      { id: 'nvr-tts-de-de', context_length: 0, max_completion_tokens: 0 },
+      { id: 'bge-m3', context_length: 8192, max_completion_tokens: 0 },
+      { id: 'stable-diffusion-xl-base-v10', context_length: 0, max_completion_tokens: 0 },
+      { id: 'gpt-oss-20b', context_length: 131072, max_completion_tokens: 32768 },
+      { id: 'Qwen3.8-27B', context_length: 65536, max_completion_tokens: 16384 },
+    ],
+  };
+  const ovhCat = categorizeModelIds(ovhModelsPayload);
+  assert.deepEqual(ovhCat.chatModels, ['gpt-oss-20b', 'Qwen3.8-27B']);
+  assert.equal(ovhCat.nonChatModels.length, 5);
+  assert.ok(ovhCat.nonChatModels.includes('solaria-3'));
+  assert.ok(ovhCat.nonChatModels.includes('nvr-tts-de-de'));
+
+  const pollCat = categorizeModelIds([
+    { name: 'openai-fast', output_modalities: ['text'] },
+    { name: 'flux-image', output_modalities: ['image'] },
+  ]);
+  assert.deepEqual(pollCat.chatModels, ['openai-fast']);
+  assert.deepEqual(pollCat.nonChatModels, ['flux-image']);
+
+  // Server-side guard blocks WebNN unless allowManualOverride is explicitly true
+  const webnnBlocked = validateChatTarget({
+    targetType: 'provider',
+    providerId: 'webnn-api',
+    providers: classified,
+    bridgeSelections: selections,
+  });
+  assert.equal(webnnBlocked.ok, false, 'WebNN must be rejected by default on server');
+
+  const webnnOverride = validateChatTarget({
+    targetType: 'provider',
+    providerId: 'webnn-api',
+    providers: classified,
+    bridgeSelections: selections,
+    allowManualOverride: true,
+  });
+  assert.equal(webnnOverride.ok, true, 'WebNN may proceed only with explicit manual override');
+});
+
+test('BridgeRunner detects native entrypoints for webai-to-api, catgpt-gateway, codex Go cmd/, and qwengate start:node', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-suite-bridge-test-'));
+  try {
+    // 1. webai-to-api (src/run.py)
+    const webaiDir = path.join(tmpRoot, 'webai-to-api');
+    fs.mkdirSync(path.join(webaiDir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(webaiDir, 'src', 'run.py'), 'print("ok")');
+    const webaiPlan = detectLocalBridgeStartPlan(webaiDir, 8104);
+    assert.equal(webaiPlan.runtime, 'python');
+    assert.deepEqual(webaiPlan.args, ['src/run.py', '--host', '127.0.0.1', '--port', '8104']);
+    assert.equal(webaiPlan.extraEnv?.PYTHONPATH, path.join(webaiDir, 'src'));
+
+    // 2. catgpt-gateway (src/api/server.py)
+    const catDir = path.join(tmpRoot, 'catgpt-gateway');
+    fs.mkdirSync(path.join(catDir, 'src', 'api'), { recursive: true });
+    fs.writeFileSync(path.join(catDir, 'src', 'api', 'server.py'), 'print("ok")');
+    const catPlan = detectLocalBridgeStartPlan(catDir, 8103);
+    assert.equal(catPlan.runtime, 'python');
+    assert.deepEqual(catPlan.args, ['-m', 'src.api.server']);
+    assert.equal(catPlan.extraEnv?.USE_XVFB, 'false');
+
+    // 3. openai-api-server-via-codex (go.mod + cmd/openai-api-server-via-codex/main.go)
+    const codexDir = path.join(tmpRoot, 'openai-api-server-via-codex');
+    fs.mkdirSync(path.join(codexDir, 'cmd', 'openai-api-server-via-codex'), { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'go.mod'), 'module example.com/codex\n');
+    fs.writeFileSync(path.join(codexDir, 'cmd', 'openai-api-server-via-codex', 'main.go'), 'package main\nfunc main(){}\n');
+    const codexPlan = detectLocalBridgeStartPlan(codexDir, 8102);
+    assert.equal(codexPlan.runtime, 'go');
+    assert.equal(codexPlan.bin, 'go');
+    assert.deepEqual(codexPlan.args, ['run', './cmd/openai-api-server-via-codex']);
+
+    // 4. qwengate (package.json with bun start + start:node)
+    const qwenDir = path.join(tmpRoot, 'qwengate');
+    fs.mkdirSync(qwenDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(qwenDir, 'package.json'),
+      JSON.stringify({ scripts: { start: 'bun src/index.tsx', 'start:node': 'node --import tsx src/index.tsx' } })
+    );
+    const qwenPlan = detectLocalBridgeStartPlan(qwenDir, 8101);
+    assert.equal(qwenPlan.runtime, 'node');
+    assert.ok(qwenPlan.args.includes('start:node'), 'Must prefer start:node when start script invokes bun');
+
+    // 5. Standalone GUI server mirrors fixes and has no bridgeById typo
+    const mjs = files.find((f) => f.path === 'gui/local_gui_server.mjs')!;
+    assert.ok(!mjs.content.includes('bridgeById'), 'local_gui_server.mjs must use allowBridges, not undefined bridgeById');
+    assert.ok(mjs.content.includes('AUTH_REQUIRED'));
+    assert.ok(mjs.content.includes('SKIP_ACCOUNT_MENU'));
+    assert.ok(mjs.content.includes('SERVER_PORT'));
+    assert.ok(mjs.content.includes('src.api.server'));
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+
 

@@ -87,7 +87,7 @@ export function computePhase4Evaluation(
     };
   }
 
-  if (p2?.status === 'fail') {
+  if (p2?.status === 'fail' && p3?.status !== 'pass' && p3?.status !== 'warn') {
     return {
       healthScore: 15,
       readinessTier: 'NICHT_ERREICHBAR',
@@ -100,9 +100,15 @@ export function computePhase4Evaluation(
     };
   }
 
+  const isAuthRequired =
+    httpCode === '401' ||
+    /HTTP 401|Auth\/API-Key|Authentifizierung/i.test(p2?.detail || '') ||
+    /HTTP 401/i.test(p3?.detail || '');
+
   let score = 50;
   if (p1?.status === 'pass') score += 15;
-  if (p2?.status === 'pass') score += 25;
+  if (p2?.status === 'pass' || p3?.status === 'pass') score += 25;
+  else if (isAuthRequired) score += 16; // Reachable API actively enforcing auth (HTTP 401)
   else if (p2?.status === 'warn') score += 12; // WAF-protected live host
 
   if (p3?.status === 'pass') score += 10;
@@ -123,13 +129,17 @@ export function computePhase4Evaluation(
   score = Math.max(0, Math.min(100, score));
 
   let readinessTier: ReadinessTier;
-  if (p2?.status === 'warn') {
+  if (p3?.status === 'pass' && provider.securityClass === 'GRUEN') {
+    readinessTier = 'SOFORT_NUTZBAR';
+  } else if (isAuthRequired) {
+    readinessTier = 'BEREIT_MIT_KEY';
+  } else if (p2?.status === 'warn') {
     readinessTier = 'EINGESCHRAENKT_WAF';
   } else if (isLocalEngine && provider.auth_typ === 'keine') {
     readinessTier = 'LOKAL_ENGINE';
   } else if (
     provider.securityClass === 'GRUEN' &&
-    (provider.auth_typ === 'keine' || hasKeyConfigured || p3?.status === 'pass')
+    (provider.auth_typ === 'keine' || hasKeyConfigured)
   ) {
     readinessTier = 'SOFORT_NUTZBAR';
   } else {
@@ -192,7 +202,7 @@ export function analyzeTestResults(
       }
     }
 
-    if (row.status === 'SKIPPED (kein Key)') {
+    if (row.status === 'SKIPPED (kein Key)' || row.status === 'AUTH_REQUIRED') {
       missingKeyCount++;
     } else if (row.status === 'WAF_PROTECTED') {
       wafProtectedCount++;
@@ -355,12 +365,23 @@ export function validateInvokeTarget(
     return { ok: true, url: parsed };
   }
 
-  // Must match the provider's base domain (same registrable root or exact host)
+  // Must match the provider's base domain (same registrable root, exact host, or server-trusted default API host)
   if (provider.url && /^https?:\/\//i.test(provider.url)) {
     try {
       const catalogHost = new URL(provider.url).hostname.toLowerCase();
       const rootDomain = (h: string) => h.split('.').slice(-2).join('.');
-      if (host !== catalogHost && rootDomain(host) !== rootDomain(catalogHost)) {
+      let trustedDefaultHost: string | null = null;
+      try {
+        const defaultInfo = resolveDefaultEndpoint(provider, classifyConnectionKind(provider).kind);
+        if (/^https?:\/\//i.test(defaultInfo.base)) {
+          trustedDefaultHost = new URL(defaultInfo.base).hostname.toLowerCase();
+        }
+      } catch {
+        // ignore
+      }
+      const matchesCatalog = host === catalogHost || rootDomain(host) === rootDomain(catalogHost);
+      const matchesTrustedDefault = trustedDefaultHost !== null && host === trustedDefaultHost;
+      if (!matchesCatalog && !matchesTrustedDefault) {
         return {
           ok: false,
           error: `Zielhost "${host}" stimmt nicht mit der Katalog-Domain "${catalogHost}" überein (SSRF-Schutz).`,
@@ -405,11 +426,15 @@ export function normalizeEnvVarName(provider: Pick<ClassifiedProvider, 'id' | 'e
 
 /**
  * Classifies how a usable (GRÜN/GELB) provider is actually meant to be used
- * so Browser-only standards (e.g. WebNN W3C spec), MCP servers, and SDK repos
- * are never falsely given `/v1/models` OpenAI URLs.
+ * so Browser-only standards (e.g. WebNN W3C spec), credit/grant portals
+ * (e.g. AMD AI Developer Program), research pages (Cohere Labs), MCP servers,
+ * and non-local SDK repos are never falsely given `/v1/models` OpenAI URLs.
  */
 export function classifyConnectionKind(
-  provider: Pick<ClassifiedProvider, 'id' | 'name' | 'url' | 'verbindungsart' | 'protokoll' | 'kategorien'>
+  provider: Pick<
+    ClassifiedProvider,
+    'id' | 'name' | 'url' | 'verbindungsart' | 'protokoll' | 'kategorien' | 'beschreibung'
+  >
 ): {
   kind: ConnectionSnippetBundle['connectionKind'];
   label: string;
@@ -419,11 +444,18 @@ export function classifyConnectionKind(
   const proto = (provider.protokoll || '').trim();
   const url = (provider.url || '').trim();
   const idName = `${provider.id} ${provider.name}`.toLowerCase();
+  const isLocal = provider.kategorien.includes('lokal_self_hosted');
+  const hasInlineApiUrl = /\(([a-z0-9.-]+\.[a-z]{2,}\/[a-z0-9/_-]*)/i.test(verb);
+  const isExplicitSdkOrMcp = /^mcp\b|sdk-eigen/i.test(verb) && !hasInlineApiUrl;
+
   const isLocalOpenAiEngine =
-    provider.kategorien.includes('lokal_self_hosted') &&
-    /\b(ollama|lm-?studio|vllm|llama-?cpp|localai|jan|koboldcpp|tabbyapi|sglang|litellm)\b/i.test(
+    isLocal &&
+    !isExplicitSdkOrMcp &&
+    (/\b(ollama|lm-?studio|vllm|llama-?cpp|localai|jan|koboldcpp|tabbyapi|sglang|litellm|mistral-?rs|textgen|xinference|dynamo|openvino|mlc-?llm|openllm|freellama|bitnet|anythingllm|unsloth|atomic-?chat|agentgateway|cliproxyapi|paddler|llm-?keypool)\b/i.test(
       idName
-    );
+    ) ||
+      /rest|openai|gateway/i.test(verb) ||
+      /openai_kompatibel/i.test(proto));
 
   // Explicit W3C specs or Browser-only / Browser-SDK entries without OpenAI REST endpoint
   if (
@@ -433,6 +465,21 @@ export function classifyConnectionKind(
     return {
       kind: 'browser_only',
       label: 'Browser-Only / Web-Standard (kein HTTP-/v1-Endpunkt)',
+      supportsOpenAiEndpoints: false,
+    };
+  }
+
+  // Credit/grant signup portals, research/blog/directory pages without direct chat API
+  if (
+    !isLocal &&
+    (/\/ai-developer-program\b|\/blog\/|\/research\/?$|registry\.modelcontextprotocol\.io|cvron\.alwaysdata\.net/i.test(
+      url
+    ) ||
+      /verzeichnis|forschungs-lagebild|gratis-credits/i.test(provider.name))
+  ) {
+    return {
+      kind: 'mcp_or_sdk',
+      label: 'Portal / Kreditprogramm / Doku (kein direkter /v1-Chat-Endpunkt)',
       supportsOpenAiEndpoints: false,
     };
   }
@@ -449,17 +496,15 @@ export function classifyConnectionKind(
     };
   }
 
-  // MCP servers, SDKs, or GitHub source repositories (unless known local OpenAI engine)
-  if (
-    !isLocalOpenAiEngine &&
-    ((/^mcp\b|sdk-eigen/i.test(verb) && !/openai_kompatibel/i.test(proto)) ||
-      (/github\.com/i.test(url) && !/rest|openai|gateway/i.test(verb)))
-  ) {
+  // MCP servers, SDK-eigen entries (e.g. Cohere Labs, node-llama-cpp), or non-local GitHub repositories
+  if (isExplicitSdkOrMcp || (!isLocalOpenAiEngine && /github\.com/i.test(url))) {
     return {
       kind: 'mcp_or_sdk',
       label: /^mcp\b/i.test(verb)
         ? 'MCP-Server / Tool-Protokoll'
-        : 'SDK / Repository / Lokales Tool',
+        : /github\.com/i.test(url)
+          ? 'GitHub-Repository / Self-Hosted Tool (zuerst lokal starten)'
+          : 'SDK / Bibliothek / Forschung (kein direkter /v1-Endpunkt)',
       supportsOpenAiEndpoints: false,
     };
   }
@@ -495,13 +540,17 @@ export function classifyConnectionKind(
 }
 
 function resolveDefaultEndpoint(
-  provider: Pick<ClassifiedProvider, 'id' | 'name' | 'url' | 'verbindungsart' | 'kategorien'>,
+  provider: Pick<
+    ClassifiedProvider,
+    'id' | 'name' | 'url' | 'verbindungsart' | 'kategorien' | 'beschreibung'
+  >,
   kind: ConnectionSnippetBundle['connectionKind']
 ): { base: string; note: string | null } {
   const rawUrl = (provider.url || '').trim();
   const idLower = provider.id.toLowerCase();
   const idName = `${provider.id} ${provider.name}`.toLowerCase();
   const isLocal = provider.kategorien.includes('lokal_self_hosted');
+  const desc = (provider.beschreibung || '').trim();
 
   // For non-OpenAI targets (Browser-only, MCP, SDK, Native REST), never fabricate /v1
   if (kind !== 'openai_rest') {
@@ -509,12 +558,40 @@ function resolveDefaultEndpoint(
       kind === 'browser_only'
         ? 'Kein REST-/v1-Endpunkt: Diese Verbindung läuft direkt im Browser bzw. ist eine Web-Spezifikation/Weboberfläche.'
         : kind === 'mcp_or_sdk'
-          ? 'Kein klassischer OpenAI-/v1-Endpunkt: Integration erfolgt über MCP-Client, SDK oder lokales Git-Repository.'
+          ? 'Kein direkter OpenAI-/v1-Endpunkt: Portal, Kreditprogramm, SDK oder lokales Git-Repository (zuerst lokal starten bzw. Ziel-API im Portal abrufen).'
           : 'Nutzt ein herstellerspezifisches REST-Protokoll (nicht OpenAI /v1/models). Offizielle Endpunkt-Doku beachten.';
     return { base: rawUrl || 'http://127.0.0.1:11434', note };
   }
 
-  // 1) Explicit inline API endpoint documented directly in verbindungsart (e.g. "(api.siliconflow.com/v1; ...)")
+  // 1) Local self-hosted OpenAI engines MUST resolve to 127.0.0.1:<port>/v1 BEFORE any cloud name matching
+  // (prevents e.g. mistral-rs from being falsely mapped to https://api.mistral.ai/v1)
+  if (isLocal) {
+    if (/ollama/i.test(idName)) return { base: 'http://127.0.0.1:11434/v1', note: null };
+    if (/lm-?studio/i.test(idName)) return { base: 'http://127.0.0.1:1234/v1', note: null };
+    if (/mistral-?rs/i.test(idName)) {
+      return {
+        base: 'http://127.0.0.1:1234/v1',
+        note: 'Lokale Rust-Engine: zuerst "mistralrs serve" lokal starten (Standardport 1234, ggf. oben anpassen).',
+      };
+    }
+    if (/vllm/i.test(idName)) return { base: 'http://127.0.0.1:8000/v1', note: null };
+    if (/llama-?cpp/i.test(idName)) return { base: 'http://127.0.0.1:8080/v1', note: null };
+    if (/textgen|oobabooga/i.test(idName)) {
+      return {
+        base: 'http://127.0.0.1:5000/v1',
+        note: 'Lokaler Server: zuerst textgen mit --api lokal starten (Standardport 5000).',
+      };
+    }
+    if (/litellm/i.test(idName)) return { base: 'http://127.0.0.1:4000/v1', note: null };
+    if (/koboldcpp/i.test(idName)) return { base: 'http://127.0.0.1:5001/v1', note: null };
+    if (/localai/i.test(idName)) return { base: 'http://127.0.0.1:8080/v1', note: null };
+    return {
+      base: 'http://127.0.0.1:8000/v1',
+      note: 'Lokale Self-Hosted-Engine: zuerst lokal starten und bei Bedarf den lokalen Port unter Basis-URL anpassen.',
+    };
+  }
+
+  // 2) Explicit inline API endpoint documented directly in verbindungsart (e.g. "(opencode.ai/zen/v1; ...)")
   const embeddedMatch = (provider.verbindungsart || '').match(
     /\(([a-z0-9.-]+\.[a-z]{2,}\/[a-z0-9/_-]*)/i
   );
@@ -524,34 +601,52 @@ function resolveDefaultEndpoint(
     return { base: `https://${normalized}`, note: null };
   }
 
-  // 2) Verified official API base mappings
-  if (isLocal && /ollama/i.test(idName)) return { base: 'http://127.0.0.1:11434/v1', note: null };
-  if (isLocal && /lm-?studio/i.test(idName)) return { base: 'http://127.0.0.1:1234/v1', note: null };
-  if (isLocal && /vllm/i.test(idName)) return { base: 'http://127.0.0.1:8000/v1', note: null };
-  if (isLocal && /llama-?cpp/i.test(idName)) return { base: 'http://127.0.0.1:8080/v1', note: null };
-  if (idLower.includes('openrouter')) return { base: 'https://openrouter.ai/api/v1', note: null };
-  if (idLower.includes('groq')) return { base: 'https://api.groq.com/openai/v1', note: null };
-  if (idLower.includes('cerebras')) return { base: 'https://api.cerebras.ai/v1', note: null };
-  if (idLower.includes('together')) return { base: 'https://api.together.xyz/v1', note: null };
-  if (idLower.includes('mistral')) return { base: 'https://api.mistral.ai/v1', note: null };
-  if (idLower === 'deepseek' || idLower.includes('deepseek-api')) {
-    return { base: 'https://api.deepseek.com/v1', note: null };
-  }
-  if (idLower.includes('fireworks')) return { base: 'https://api.fireworks.ai/inference/v1', note: null };
-  if (idLower.includes('sambanova')) return { base: 'https://api.sambanova.ai/v1', note: null };
-  if (idLower.includes('siliconflow')) return { base: 'https://api.siliconflow.com/v1', note: null };
-  if (idLower.includes('github-models')) return { base: 'https://models.github.ai/inference', note: null };
-  if (idLower.includes('google-ai-studio') || idLower === 'gemini-api') {
-    return { base: 'https://generativelanguage.googleapis.com/v1beta/openai', note: null };
+  // 3) Explicit full https://.../v1 or /proxy/v1 endpoint documented verbatim in beschreibung
+  const descEndpointMatch = desc.match(/https:\/\/[a-z0-9.-]+\.[a-z]{2,}\/[a-z0-9/_-]*\/v1\b/i);
+  if (descEndpointMatch && descEndpointMatch[0]) {
+    return { base: descEndpointMatch[0].replace(/\/+$/, ''), note: null };
   }
 
-  // 3) Fallback for REST providers whose catalog URL is already an API path vs. a landing/docs page
+  // 4) Verified official cloud API base mappings (strictly non-local, non-GitHub)
+  if (!/github\.com/i.test(rawUrl)) {
+    if (idLower === 'pollinations') {
+      return {
+        base: 'https://text.pollinations.ai/openai',
+        note: 'Keyless Text-API laut Katalog (max. 1 Anfrage / 30 s pro IP; anonymes Modell z. B. openai / gpt-oss-20b).',
+      };
+    }
+    if (idLower.includes('openrouter')) return { base: 'https://openrouter.ai/api/v1', note: null };
+    if (idLower.includes('groq')) return { base: 'https://api.groq.com/openai/v1', note: null };
+    if (idLower.includes('cerebras')) return { base: 'https://api.cerebras.ai/v1', note: null };
+    if (idLower.includes('together')) return { base: 'https://api.together.xyz/v1', note: null };
+    if (idLower === 'mistral-la-plateforme' || (idLower.includes('mistral') && /mistral\.ai/i.test(rawUrl))) {
+      return { base: 'https://api.mistral.ai/v1', note: null };
+    }
+    if (idLower === 'deepseek' || idLower.includes('deepseek-api')) {
+      return { base: 'https://api.deepseek.com/v1', note: null };
+    }
+    if (idLower.includes('fireworks')) return { base: 'https://api.fireworks.ai/inference/v1', note: null };
+    if (idLower.includes('sambanova')) return { base: 'https://api.sambanova.ai/v1', note: null };
+    if (idLower.includes('siliconflow')) return { base: 'https://api.siliconflow.com/v1', note: null };
+    if (idLower.includes('github-models')) return { base: 'https://models.github.ai/inference', note: null };
+    if (idLower.includes('google-ai-studio') || idLower === 'gemini-api') {
+      return { base: 'https://generativelanguage.googleapis.com/v1beta/openai', note: null };
+    }
+  }
+
+  // 5) Fallback for REST providers whose catalog URL is already an API path vs. a docs/landing page
   if (rawUrl.startsWith('http') && !/github\.com/i.test(rawUrl)) {
     const trimmed = rawUrl.replace(/\/+$/, '');
     if (/\/v1(\b|\/)/i.test(trimmed) || /\/openai$/i.test(trimmed)) {
       return { base: trimmed, note: null };
     }
-    const looksLikeApiHost = /^https?:\/\/(api\.|models\.|inference\.|router\.)/i.test(trimmed);
+    if (/^https?:\/\/docs\.|\/docs\//i.test(trimmed)) {
+      return {
+        base: trimmed,
+        note: 'Katalog-URL zeigt auf die API-Dokumentation (nicht direkt auf den Inferenz-Host). Offizielle API-Basis-URL laut Doku oben eintragen.',
+      };
+    }
+    const looksLikeApiHost = /^https?:\/\/(api\.|models\.|inference\.|router\.|oai\.)/i.test(trimmed);
     return {
       base: `${trimmed}/v1`,
       note: looksLikeApiHost

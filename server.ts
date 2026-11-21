@@ -8,6 +8,7 @@ import { createServer as createViteServer } from 'vite';
 import { BridgeProcessManager, buildBridgeManualCommands } from './src/lib/bridgeRunner.ts';
 import { consolidateBridges } from './src/lib/bridgeSelector.ts';
 import {
+  categorizeModelIds,
   extractChatCompletionReply,
   extractModelIds,
   sanitizeChatMessages,
@@ -15,6 +16,16 @@ import {
   type ChatTargetType,
 } from './src/lib/chatEngine.ts';
 import { buildInitialTestResults, classifyAllProviders } from './src/lib/classifier.ts';
+import {
+  computeNextRunAt,
+  createDefaultWorkspace,
+  createId,
+  isJobDue,
+  retrieveProjectContext,
+  validateWorkspacePayload,
+  type NotebookChronoJob,
+  type NotebooksWorkspace,
+} from './src/lib/notebookEngine.ts';
 import { parseProviderMarkdown } from './src/lib/parser.ts';
 import {
   cloneOrUpdateBridgeRepo,
@@ -52,6 +63,33 @@ const DEFAULT_DATASET_PATH = path.resolve(
   'public/assets/aistudio/ai_provider_2__1d92e1da.txt'
 );
 const BRIDGES_ROOT_DIR = path.resolve(__dirname, 'bridges');
+const NOTEBOOKS_DATA_DIR = path.resolve(__dirname, 'data');
+const NOTEBOOKS_FILE_PATH = path.resolve(NOTEBOOKS_DATA_DIR, 'notebooks.json');
+
+function loadNotebooksFromDisk(): NotebooksWorkspace {
+  try {
+    if (fs.existsSync(NOTEBOOKS_FILE_PATH)) {
+      const raw = JSON.parse(fs.readFileSync(NOTEBOOKS_FILE_PATH, 'utf8'));
+      const validated = validateWorkspacePayload(raw);
+      if (validated.ok && validated.workspace.projects.length > 0) {
+        return validated.workspace;
+      }
+    }
+  } catch (err) {
+    console.warn('Could not load data/notebooks.json, initializing fresh workspace:', err);
+  }
+  return createDefaultWorkspace();
+}
+
+function saveNotebooksToDisk(workspace: NotebooksWorkspace): void {
+  fs.mkdirSync(NOTEBOOKS_DATA_DIR, { recursive: true });
+  const tmpPath = path.resolve(NOTEBOOKS_DATA_DIR, `notebooks.${process.pid}.tmp.json`);
+  if (!tmpPath.startsWith(NOTEBOOKS_DATA_DIR + path.sep)) {
+    throw new Error('Ungültiger Speicherpfad.');
+  }
+  fs.writeFileSync(tmpPath, JSON.stringify(workspace, null, 2), 'utf8');
+  fs.renameSync(tmpPath, NOTEBOOKS_FILE_PATH);
+}
 
 interface ServerState {
   sourceName: string;
@@ -456,7 +494,8 @@ async function executeMultiPhaseTest(
       'cf-ray': response.headers.get('cf-ray'),
     };
     const ok = response.status >= 200 && response.status < 400;
-    const isWaf = !ok && isLikelyWafChallenge(response.status, headerObj);
+    const isAuth401 = response.status === 401;
+    const isWaf = !ok && !isAuth401 && isLikelyWafChallenge(response.status, headerObj);
 
     if (ok) {
       finalStatus = redirected ? 'REDIRECT' : 'OK';
@@ -465,6 +504,15 @@ async function executeMultiPhaseTest(
         label: 'Phase 2: HTTP/TLS',
         status: 'pass',
         detail: `${usedMethod} HTTP ${response.status} (${latencyMs}ms)${redirected ? ` → ${finalUrl}` : ''}`,
+        durationMs: latencyMs,
+      });
+    } else if (isAuth401) {
+      finalStatus = 'AUTH_REQUIRED';
+      phases.push({
+        phase: 'reachability',
+        label: 'Phase 2: HTTP/TLS',
+        status: 'warn',
+        detail: `HTTP 401 — Host erreichbar, Auth/API-Key erforderlich (${latencyMs}ms)${redirected ? ` → ${finalUrl}` : ''}`,
         durationMs: latencyMs,
       });
     } else if (isWaf) {
@@ -487,7 +535,13 @@ async function executeMultiPhaseTest(
       });
     }
 
-    // Phase 3: Protocol / API Probe
+    // Phase 3: Protocol / API Probe (also runs when an OpenAI /v1 root returns 404/405, e.g. OVHcloud AI Endpoints)
+    const snippets = buildConnectionSnippets(p);
+    const isOpenAiApiBase404 =
+      (response.status === 404 || response.status === 405) &&
+      snippets.supportsOpenAiEndpoints &&
+      !/github\.com/i.test(finalUrl);
+
     if (p.securityClass === 'GELB') {
       phases.push({
         phase: 'protocol',
@@ -496,53 +550,70 @@ async function executeMultiPhaseTest(
         detail: 'Übersprungen gemäß Ziel 2.3 (GELB: nur Reachability-Check, kein automatischer API-Call).',
       });
     } else if (
-      (ok || isWaf) &&
-      (/REST|OpenAI|Gateway/i.test(p.verbindungsart) || /openai/i.test(p.protokoll)) &&
+      (ok || isWaf || isAuth401 || isOpenAiApiBase404) &&
+      snippets.supportsOpenAiEndpoints &&
       !/github\.com/i.test(finalUrl)
     ) {
-      if (p.auth_typ === 'keine' || hasKeyConfigured) {
-        const snippets = buildConnectionSnippets(p);
-        const probeUrl = `${snippets.defaultApiBase.replace(/\/+$/, '')}/models`;
+      if (p.auth_typ === 'keine' || hasKeyConfigured || isOpenAiApiBase404) {
+        const cleanBase = snippets.defaultApiBase.replace(/\/+$/, '');
+        const probeUrls = [
+          `${cleanBase}/models`,
+          ...(cleanBase.endsWith('/openai') ? [`${cleanBase.replace(/\/openai$/, '')}/models`] : []),
+        ];
         const p3Start = Date.now();
+        let p3Done = false;
         try {
           const probeHeaders: Record<string, string> = { Accept: 'application/json' };
           if (hasKeyConfigured) {
             probeHeaders['Authorization'] = `Bearer ${activeKey}`;
           }
-          const probeRes = await fetchWithTimeout(
-            probeUrl,
-            { method: 'GET', headers: probeHeaders },
-            6000
-          );
-          const p3Ms = Date.now() - p3Start;
-          if (probeRes.ok) {
-            const text = await probeRes.text();
-            let modelCount: number | null = null;
-            try {
-              const parsedJson = JSON.parse(text) as { data?: unknown[]; models?: unknown[] };
-              if (Array.isArray(parsedJson?.data)) modelCount = parsedJson.data.length;
-              else if (Array.isArray(parsedJson?.models)) modelCount = parsedJson.models.length;
-            } catch {
-              // non-JSON
+          let lastProbeStatus = 0;
+          for (const probeUrl of probeUrls) {
+            const probeRes = await fetchWithTimeout(
+              probeUrl,
+              { method: 'GET', headers: probeHeaders },
+              6000
+            );
+            lastProbeStatus = probeRes.status;
+            const p3Ms = Date.now() - p3Start;
+            if (probeRes.ok) {
+              const text = await probeRes.text();
+              let modelCount: number | null = null;
+              try {
+                const parsedJson = JSON.parse(text) as unknown;
+                const cat = categorizeModelIds(parsedJson);
+                if (cat.allModels.length > 0) modelCount = cat.chatModels.length || cat.allModels.length;
+              } catch {
+                // non-JSON
+              }
+              apiProbeSummary =
+                modelCount !== null
+                  ? `GET /models → HTTP ${probeRes.status} (${modelCount} Chat-Modelle, ${p3Ms}ms)`
+                  : `GET /models → HTTP ${probeRes.status} (${p3Ms}ms)`;
+              finalStatus = 'OK_API_PROBE';
+              httpCode = String(probeRes.status);
+              phases.push({
+                phase: 'protocol',
+                label: 'Phase 3: API-Probe',
+                status: 'pass',
+                detail: apiProbeSummary,
+                durationMs: p3Ms,
+              });
+              p3Done = true;
+              break;
             }
-            apiProbeSummary =
-              modelCount !== null
-                ? `GET /models → HTTP ${probeRes.status} (${modelCount} Modelle, ${p3Ms}ms)`
-                : `GET /models → HTTP ${probeRes.status} (${p3Ms}ms)`;
-            finalStatus = 'OK_API_PROBE';
+          }
+          if (!p3Done) {
+            const p3Ms = Date.now() - p3Start;
+            apiProbeSummary = `GET /models → HTTP ${lastProbeStatus} (${p3Ms}ms)`;
+            if (lastProbeStatus === 401) {
+              finalStatus = 'AUTH_REQUIRED';
+              httpCode = '401';
+            }
             phases.push({
               phase: 'protocol',
               label: 'Phase 3: API-Probe',
-              status: 'pass',
-              detail: apiProbeSummary,
-              durationMs: p3Ms,
-            });
-          } else {
-            apiProbeSummary = `GET /models → HTTP ${probeRes.status} (${p3Ms}ms)`;
-            phases.push({
-              phase: 'protocol',
-              label: 'Phase 3: API-Probe',
-              status: probeRes.status === 401 || probeRes.status === 403 ? 'warn' : 'skip',
+              status: lastProbeStatus === 401 || lastProbeStatus === 403 ? 'warn' : 'skip',
               detail: `${apiProbeSummary} (Endpunkt existiert, Auth/Pfad ggf. spezifisch).`,
               durationMs: p3Ms,
             });
@@ -552,7 +623,7 @@ async function executeMultiPhaseTest(
             phase: 'protocol',
             label: 'Phase 3: API-Probe',
             status: 'skip',
-            detail: `Standard-Pfad ${probeUrl} nicht direkt abrufbar (Basis-Portal jedoch aktiv).`,
+            detail: `Standard-Pfad ${probeUrls[0]} nicht direkt abrufbar (Basis-Portal jedoch aktiv).`,
           });
         }
       } else {
@@ -668,7 +739,7 @@ async function runBatchAsync(targets: ClassifiedProvider[], mode: string, token:
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '8mb' }));
+  app.use(express.json({ limit: '16mb' }));
 
   app.get('/api/workspace', (_req, res) => {
     res.json(buildWorkspacePayload());
@@ -966,12 +1037,13 @@ async function startServer() {
 
   // Dedicated Chat Window: fetch available models from Bridge, GRÜN/GELB Provider, LiteLLM, or Local Loopback
   app.post('/api/chat/models', async (req, res) => {
-    const { targetType, bridgeId, providerId, endpointUrl, apiKey } = req.body as {
+    const { targetType, bridgeId, providerId, endpointUrl, apiKey, allowManualOverride } = req.body as {
       targetType?: ChatTargetType;
       bridgeId?: string;
       providerId?: string;
       endpointUrl?: string;
       apiKey?: string;
+      allowManualOverride?: boolean;
     };
 
     const resolved = validateChatTarget({
@@ -981,6 +1053,7 @@ async function startServer() {
       endpointUrl,
       providers: state.providers,
       bridgeSelections: state.bridgeSelections,
+      allowManualOverride: allowManualOverride === true,
     });
     if (!resolved.ok) {
       res.status(403).json({ ok: false, error: resolved.error, models: [] });
@@ -999,7 +1072,17 @@ async function startServer() {
 
     const start = Date.now();
     try {
-      const response = await fetchWithTimeout(targetUrl, { method: 'GET', headers }, 10000);
+      let effectiveTargetUrl = targetUrl;
+      let response = await fetchWithTimeout(effectiveTargetUrl, { method: 'GET', headers }, 10000);
+      // Fallback for APIs like Pollinations (`https://text.pollinations.ai/openai` -> `/models` at root)
+      if (!response.ok && resolved.baseUrl.endsWith('/openai')) {
+        const altUrl = `${resolved.baseUrl.replace(/\/openai$/, '')}/models`;
+        const altRes = await fetchWithTimeout(altUrl, { method: 'GET', headers }, 10000);
+        if (altRes.ok) {
+          response = altRes;
+          effectiveTargetUrl = altUrl;
+        }
+      }
       const latencyMs = Date.now() - start;
       const rawText = (await response.text()).slice(0, 200000);
       let parsed: unknown = null;
@@ -1008,13 +1091,15 @@ async function startServer() {
       } catch {
         // non-JSON
       }
-      const models = extractModelIds(parsed);
+      const categorized = categorizeModelIds(parsed);
       res.json({
         ok: response.ok,
         httpStatus: response.status,
         latencyMs,
-        targetUrl,
-        models,
+        targetUrl: effectiveTargetUrl,
+        models: categorized.chatModels.length > 0 ? categorized.chatModels : categorized.allModels,
+        chatModels: categorized.chatModels,
+        nonChatModels: categorized.nonChatModels,
         error: response.ok
           ? undefined
           : `HTTP ${response.status} beim Laden von /models (${resolved.label}).`,
@@ -1042,10 +1127,13 @@ async function startServer() {
       bridgeId,
       providerId,
       endpointUrl,
+      allowManualOverride,
       apiKey,
       model,
       messages,
       systemPrompt,
+      images,
+      includeSources,
       temperature,
       maxTokens,
     } = req.body as {
@@ -1053,10 +1141,13 @@ async function startServer() {
       bridgeId?: string;
       providerId?: string;
       endpointUrl?: string;
+      allowManualOverride?: boolean;
       apiKey?: string;
       model?: string;
       messages?: unknown;
       systemPrompt?: string;
+      images?: unknown;
+      includeSources?: boolean;
       temperature?: number;
       maxTokens?: number;
     };
@@ -1066,6 +1157,7 @@ async function startServer() {
       bridgeId,
       providerId,
       endpointUrl,
+      allowManualOverride: allowManualOverride === true,
       providers: state.providers,
       bridgeSelections: state.bridgeSelections,
     });
@@ -1074,7 +1166,7 @@ async function startServer() {
       return;
     }
 
-    const sanitizedMessages = sanitizeChatMessages(messages, systemPrompt);
+    const sanitizedMessages = sanitizeChatMessages(messages, systemPrompt, images);
     if (sanitizedMessages.length === 0 || !sanitizedMessages.some((m) => m.role === 'user')) {
       res.status(400).json({ ok: false, error: 'Bitte mindestens eine Benutzer-Nachricht senden.' });
       return;
@@ -1098,6 +1190,9 @@ async function startServer() {
       messages: sanitizedMessages,
       stream: false,
     };
+    if (includeSources === true) {
+      payloadBody.include_sources = true;
+    }
     if (typeof temperature === 'number' && Number.isFinite(temperature)) {
       payloadBody.temperature = Math.max(0, Math.min(2, temperature));
     }
@@ -1114,10 +1209,10 @@ async function startServer() {
           headers,
           body: JSON.stringify(payloadBody),
         },
-        45000
+        90000
       );
       const latencyMs = Date.now() - start;
-      const rawText = (await response.text()).slice(0, 120000);
+      const rawText = (await response.text()).slice(0, 180000);
       let parsed: unknown = null;
       try {
         parsed = JSON.parse(rawText);
@@ -1165,13 +1260,320 @@ async function startServer() {
         latencyMs: Date.now() - start,
         targetUrl,
         error: isAbort
-          ? 'Timeout nach 45 s — keine Antwort vom Zielendpunkt.'
+          ? 'Timeout nach 90 s — keine Antwort vom Zielendpunkt.'
           : resolved.targetType === 'bridge' || resolved.targetType === 'litellm' || resolved.targetType === 'custom_local'
             ? `Lokaler Endpunkt ${targetUrl} nicht erreichbar (${msg.slice(0, 140)}). Starte zuerst die Bridge bzw. den lokalen Dienst.`
             : `Verbindungsfehler zu ${targetUrl}: ${msg.slice(0, 160)}`,
       });
     }
   });
+
+  // =========================================================================
+  // Local Projects / Notebooks, Knowledge Base & Chrono-Jobs (strictly local)
+  // =========================================================================
+  let notebooksWorkspace: NotebooksWorkspace = loadNotebooksFromDisk();
+  const runningChronoJobs = new Set<string>();
+
+  async function executeChronoJob(
+    projectId: string,
+    jobId: string,
+    ramOnlyApiKey?: string
+  ): Promise<{ ok: boolean; error?: string; job?: NotebookChronoJob }> {
+    const project = notebooksWorkspace.projects.find((p) => p.id === projectId);
+    if (!project) return { ok: false, error: 'Projekt nicht gefunden.' };
+    const job = project.chronoJobs.find((j) => j.id === jobId);
+    if (!job) return { ok: false, error: 'Chrono-Job nicht gefunden.' };
+    if (runningChronoJobs.has(job.id)) {
+      return { ok: false, error: 'Chrono-Job läuft bereits.' };
+    }
+
+    const resolved = validateChatTarget({
+      targetType: job.targetType,
+      bridgeId: job.bridgeId,
+      providerId: job.providerId,
+      endpointUrl: job.endpointUrl,
+      providers: state.providers,
+      bridgeSelections: state.bridgeSelections,
+    });
+    if (!resolved.ok) {
+      job.lastStatus = 'error';
+      job.lastError = resolved.error;
+      job.lastRunAt = new Date().toISOString();
+      job.nextRunAt = computeNextRunAt(job, new Date());
+      saveNotebooksToDisk(notebooksWorkspace);
+      return { ok: false, error: resolved.error, job };
+    }
+
+    runningChronoJobs.add(job.id);
+    job.lastStatus = 'running';
+    job.lastError = null;
+    const nowIso = new Date().toISOString();
+    const tsLabel = new Date().toLocaleTimeString('de-DE', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+
+    try {
+      // Find or create the dedicated Chrono-Job output chat inside the project
+      let targetChat = project.chats.find((c) => c.id === job.targetChatId);
+      if (!targetChat) {
+        targetChat = {
+          id: createId('chat-chrono'),
+          title: `Chrono: ${job.name}`,
+          pinned: false,
+          targetType: job.targetType,
+          bridgeId: job.bridgeId,
+          providerId: job.providerId,
+          endpointUrl: resolved.baseUrl,
+          modelId: job.modelId || 'default',
+          messages: [],
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        project.chats.unshift(targetChat);
+        job.targetChatId = targetChat.id;
+      }
+
+      const rag = retrieveProjectContext({
+        project,
+        activeChatId: targetChat.id,
+        query: job.prompt,
+      });
+
+      const messagesPayload = sanitizeChatMessages(
+        [{ role: 'user', content: job.prompt }],
+        rag.compiledSystemBlock || undefined
+      );
+
+      const headers: Record<string, string> = {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      };
+      const effectiveKey =
+        (typeof ramOnlyApiKey === 'string' && ramOnlyApiKey.trim()) ||
+        (resolved.envVarHint ? process.env[resolved.envVarHint]?.trim() : '') ||
+        '';
+      if (effectiveKey) {
+        headers['Authorization'] = `Bearer ${effectiveKey}`;
+      }
+
+      const payloadBody: Record<string, unknown> = {
+        model: (job.modelId && job.modelId.trim()) || 'default',
+        messages: messagesPayload,
+        stream: false,
+      };
+      if (job.includeSources) {
+        payloadBody.include_sources = true;
+      }
+
+      const targetUrl = `${resolved.baseUrl}/chat/completions`;
+      const start = Date.now();
+      const response = await fetchWithTimeout(
+        targetUrl,
+        { method: 'POST', headers, body: JSON.stringify(payloadBody) },
+        90000
+      );
+      const latencyMs = Date.now() - start;
+      const rawText = (await response.text()).slice(0, 180000);
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        // non-JSON
+      }
+      const extracted = extractChatCompletionReply(parsed, rawText);
+
+      targetChat.messages.push({
+        id: createId('u'),
+        role: 'user',
+        content: `[Chrono-Job: ${job.name}]\n${job.prompt}`,
+        createdAt: tsLabel,
+      });
+
+      if (response.ok && extracted.reply !== null) {
+        targetChat.messages.push({
+          id: createId('a'),
+          role: 'assistant',
+          content: extracted.reply,
+          createdAt: tsLabel,
+          model: extracted.model || String(payloadBody.model),
+          latencyMs,
+          httpStatus: response.status,
+          targetUrl,
+          contextSources: rag.citations.length > 0 ? rag.citations : undefined,
+          usage: extracted.usage,
+        });
+        targetChat.updatedAt = new Date().toISOString();
+
+        if (job.saveToKnowledge) {
+          const docTitle = `Chrono: ${job.name} (${new Date().toLocaleDateString('de-DE')} ${tsLabel.slice(0, 5)})`;
+          project.knowledgeDocs.unshift({
+            id: createId('doc'),
+            title: docTitle,
+            sourceType: 'snippet',
+            tags: ['chrono', job.name.toLowerCase().slice(0, 24)],
+            content: extracted.reply,
+            enabled: true,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        }
+
+        job.lastStatus = 'ok';
+        job.lastError = null;
+        job.lastSummary = extracted.reply.replace(/\s+/g, ' ').slice(0, 220);
+        job.lastRunAt = new Date().toISOString();
+        job.runCount = (job.runCount || 0) + 1;
+        if (job.scheduleType === 'once') {
+          job.enabled = false;
+          job.nextRunAt = null;
+        } else {
+          job.nextRunAt = computeNextRunAt(job, new Date());
+        }
+        project.updatedAt = new Date().toISOString();
+        saveNotebooksToDisk(notebooksWorkspace);
+        return { ok: true, job };
+      }
+
+      const errMsg =
+        extracted.errorMessage || `HTTP ${response.status} von ${resolved.label}`;
+      targetChat.messages.push({
+        id: createId('e'),
+        role: 'error',
+        content: `Chrono-Job Fehler: ${errMsg}`,
+        createdAt: tsLabel,
+        latencyMs,
+        httpStatus: response.status,
+        targetUrl,
+      });
+      targetChat.updatedAt = new Date().toISOString();
+
+      job.lastStatus = 'error';
+      job.lastError = errMsg.slice(0, 300);
+      job.lastRunAt = new Date().toISOString();
+      job.nextRunAt = computeNextRunAt(job, new Date());
+      saveNotebooksToDisk(notebooksWorkspace);
+      return { ok: false, error: errMsg, job };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message.slice(0, 260) : 'Verbindungsfehler';
+      job.lastStatus = 'error';
+      job.lastError = `Ziel nicht erreichbar (${msg}). Läuft die Bridge / der Dienst?`;
+      job.lastRunAt = new Date().toISOString();
+      job.nextRunAt = computeNextRunAt(job, new Date());
+      saveNotebooksToDisk(notebooksWorkspace);
+      return { ok: false, error: job.lastError, job };
+    } finally {
+      runningChronoJobs.delete(job.id);
+    }
+  }
+
+  app.get('/api/notebooks', (_req, res) => {
+    res.json({ ok: true, workspace: notebooksWorkspace });
+  });
+
+  app.put('/api/notebooks', (req, res) => {
+    const body = (req.body as { workspace?: unknown })?.workspace ?? req.body;
+    const validated = validateWorkspacePayload(body);
+    if (!validated.ok) {
+      res.status(400).json({ ok: false, error: validated.error });
+      return;
+    }
+    notebooksWorkspace = validated.workspace;
+    try {
+      saveNotebooksToDisk(notebooksWorkspace);
+      res.json({ ok: true, workspace: notebooksWorkspace });
+    } catch (err: unknown) {
+      res.status(500).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Konnte Notebooks nicht lokal speichern.',
+      });
+    }
+  });
+
+  app.post('/api/notebooks/chrono/run', async (req, res) => {
+    const { projectId, jobId, apiKey } = req.body as {
+      projectId?: string;
+      jobId?: string;
+      apiKey?: string;
+    };
+    if (!projectId || !jobId) {
+      res.status(400).json({ ok: false, error: 'projectId und jobId erforderlich.' });
+      return;
+    }
+    const result = await executeChronoJob(projectId, jobId, apiKey);
+    res.json({
+      ok: result.ok,
+      error: result.error,
+      job: result.job,
+      workspace: notebooksWorkspace,
+    });
+  });
+
+  // Live bridge /healthz & capability probe (strictly allowlisted 127.0.0.1:<port>)
+  app.get('/api/bridges/:bridgeId/healthz', async (req, res) => {
+    const bridgeId = String(req.params.bridgeId || '');
+    const sel = state.bridgeSelections.find(
+      (b) => b.bridge_id === bridgeId && b.docker_capable && typeof b.port === 'number'
+    );
+    if (!sel || !sel.port) {
+      res.status(404).json({ ok: false, error: 'Bridge nicht auf der lokalen Allowlist.' });
+      return;
+    }
+    const healthUrl = `http://127.0.0.1:${sel.port}/healthz`;
+    const modelsUrl = `http://127.0.0.1:${sel.port}/v1/models`;
+    let healthz: Record<string, unknown> | null = null;
+    let models: string[] = [];
+    let reachable = false;
+    try {
+      const hRes = await fetchWithTimeout(healthUrl, { method: 'GET' }, 4000);
+      if (hRes.ok) {
+        reachable = true;
+        const txt = await hRes.text();
+        try {
+          healthz = JSON.parse(txt) as Record<string, unknown>;
+        } catch {
+          healthz = { ok: true, raw: txt.slice(0, 300) };
+        }
+      }
+    } catch {
+      // bridge may not expose /healthz or may be stopped
+    }
+    try {
+      const mRes = await fetchWithTimeout(modelsUrl, { method: 'GET' }, 4000);
+      if (mRes.ok) {
+        reachable = true;
+        const txt = await mRes.text();
+        try {
+          models = extractModelIds(JSON.parse(txt));
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      // ignore
+    }
+    res.json({
+      ok: reachable,
+      bridgeId,
+      port: sel.port,
+      healthz,
+      models,
+    });
+  });
+
+  // Background Chrono-Job ticker (every 30s). Never auto-starts stopped ROT bridges!
+  const chronoInterval = setInterval(() => {
+    const now = new Date();
+    for (const project of notebooksWorkspace.projects) {
+      for (const job of project.chronoJobs) {
+        if (isJobDue(job, now)) {
+          void executeChronoJob(project.id, job.id);
+        }
+      }
+    }
+  }, 30_000);
+  chronoInterval.unref?.();
 
   app.get('/api/bridges/repos', async (_req, res) => {
     if (!state.cloneBatchRunning) {

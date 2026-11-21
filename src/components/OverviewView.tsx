@@ -50,7 +50,11 @@ export function OverviewView({
   const executedCount = testResults.filter((r) => r.executed).length;
   const skippedCount = testResults.filter((r) => r.status.startsWith('SKIPPED')).length;
   const okCount = testResults.filter(
-    (r) => r.status === 'OK' || r.status === 'OK_API_PROBE' || r.status === 'REDIRECT'
+    (r) =>
+      r.status === 'OK' ||
+      r.status === 'OK_API_PROBE' ||
+      r.status === 'REDIRECT' ||
+      r.status === 'AUTH_REQUIRED'
   ).length;
   const passedAudits = summary.auditChecks.filter((a) => a.passed).length;
   const clonedReposCount = bridgeRepos.filter((r) => r.cloned).length;

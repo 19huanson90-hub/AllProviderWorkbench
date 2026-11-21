@@ -67,6 +67,7 @@ export type TestRunStatus =
   | 'OK'
   | 'OK_API_PROBE'
   | 'REDIRECT'
+  | 'AUTH_REQUIRED'
   | 'WAF_PROTECTED'
   | 'HTTP_ERROR'
   | 'TIMEOUT'

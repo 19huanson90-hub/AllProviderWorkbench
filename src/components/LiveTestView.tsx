@@ -89,7 +89,13 @@ export function LiveTestView({
     let skipped = 0;
     for (const r of testResults) {
       if (r.executed) executed++;
-      if (r.status === 'OK' || r.status === 'OK_API_PROBE' || r.status === 'REDIRECT') ok++;
+      if (
+        r.status === 'OK' ||
+        r.status === 'OK_API_PROBE' ||
+        r.status === 'REDIRECT' ||
+        r.status === 'AUTH_REQUIRED'
+      )
+        ok++;
       else if (r.status === 'WAF_PROTECTED') waf++;
       else if (r.status === 'HTTP_ERROR' || r.status === 'TIMEOUT' || r.status === 'NETWORK_ERROR')
         errors++;

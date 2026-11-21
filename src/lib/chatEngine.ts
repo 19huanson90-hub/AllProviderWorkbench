@@ -33,15 +33,34 @@ export function isLoopbackHost(hostname: string): boolean {
  * Validates and resolves any chat target (allowlisted Bridge, GRÜN/GELB Provider,
  * local LiteLLM router, or custom loopback server) with strict SSRF and Rule 1/3/4 guards.
  */
+export function resolveDefaultChatModel(providerId?: string, bridgeId?: string): string {
+  if (bridgeId === 'grok-com-to-openai') return 'grok-fast';
+  if (bridgeId === 'freedeepseekapi') return 'deepseek-chat';
+  if (bridgeId === 'openai-api-server-via-codex') return 'gpt-5.4-mini';
+  const pid = (providerId || '').toLowerCase();
+  if (pid === 'pollinations' || pid.includes('pollinations')) return 'openai-fast';
+  if (pid === 'ovh-ai-endpoints' || pid.includes('ovh')) return 'gpt-oss-20b';
+  return 'default';
+}
+
 export function validateChatTarget(params: {
   targetType: ChatTargetType;
   bridgeId?: string;
   providerId?: string;
   endpointUrl?: string;
+  allowManualOverride?: boolean;
   providers: ClassifiedProvider[];
   bridgeSelections: BridgeSelectionEntry[];
 }): ChatTargetResolution | ChatTargetError {
-  const { targetType, bridgeId, providerId, endpointUrl, providers, bridgeSelections } = params;
+  const {
+    targetType,
+    bridgeId,
+    providerId,
+    endpointUrl,
+    allowManualOverride,
+    providers,
+    bridgeSelections,
+  } = params;
 
   if (targetType === 'bridge') {
     const sel = bridgeSelections.find(
@@ -74,6 +93,12 @@ export function validateChatTarget(params: {
       };
     }
     const snippets = buildConnectionSnippets(prov);
+    if (!snippets.supportsOpenAiEndpoints && !allowManualOverride) {
+      return {
+        ok: false,
+        error: `${prov.name} ist kein direkter OpenAI-/chat/completions-Endpunkt (${snippets.connectionLabel}). Wähle einen chatfähigen Provider (z. B. OVHcloud, Pollinations.AI, Groq) oder aktiviere explizit den manuellen Override.`,
+      };
+    }
     const rawBase = (endpointUrl && endpointUrl.trim() ? endpointUrl.trim() : snippets.defaultApiBase).replace(
       /\/+$/,
       ''
@@ -151,11 +176,24 @@ export function validateChatTarget(params: {
   return { ok: false, error: 'Unbekannter Zieltyp.' };
 }
 
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
+export interface ChatOutboundMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string | ChatContentPart[];
+}
+
+const SAFE_DATA_IMAGE_RE = /^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i;
+const MAX_IMAGE_DATA_URL_CHARS = 7_500_000; // ~5.5 MB raw image
+
 export function sanitizeChatMessages(
   messages: unknown,
-  systemPrompt?: string
-): ChatTurnMessage[] {
-  const out: ChatTurnMessage[] = [];
+  systemPrompt?: string,
+  latestImages?: unknown
+): ChatOutboundMessage[] {
+  const out: ChatOutboundMessage[] = [];
   if (typeof systemPrompt === 'string' && systemPrompt.trim().length > 0) {
     out.push({
       role: 'system',
@@ -176,6 +214,42 @@ export function sanitizeChatMessages(
       content: trimmed.slice(0, MAX_MESSAGE_CHARS),
     });
   }
+
+  // Attach strictly validated base64 image data URLs to the last user message (for Grok Vision / OpenAI multimodal)
+  if (Array.isArray(latestImages) && latestImages.length > 0) {
+    const validUrls: string[] = [];
+    for (const img of latestImages.slice(0, 4)) {
+      const candidate =
+        typeof img === 'string'
+          ? img.trim()
+          : img && typeof img === 'object' && typeof (img as { dataUrl?: unknown }).dataUrl === 'string'
+            ? (img as { dataUrl: string }).dataUrl.trim()
+            : '';
+      if (
+        candidate &&
+        candidate.length <= MAX_IMAGE_DATA_URL_CHARS &&
+        SAFE_DATA_IMAGE_RE.test(candidate)
+      ) {
+        validUrls.push(candidate);
+      }
+    }
+    if (validUrls.length > 0) {
+      for (let i = out.length - 1; i >= 0; i--) {
+        if (out[i].role === 'user' && typeof out[i].content === 'string') {
+          const parts: ChatContentPart[] = [
+            { type: 'text', text: out[i].content as string },
+            ...validUrls.map((url) => ({
+              type: 'image_url' as const,
+              image_url: { url },
+            })),
+          ];
+          out[i] = { role: 'user', content: parts };
+          break;
+        }
+      }
+    }
+  }
+
   return out;
 }
 
@@ -308,42 +382,82 @@ export function extractChatCompletionReply(
   return { reply: null };
 }
 
+const NON_CHAT_MODEL_RE =
+  /(^|[-_/.])(whisper|tts|nvr-tts|solaria|embed|embedding|embeddings|bge|rerank|reranker|stable-diffusion|sdxl|flux|dall-e|moderation|transcribe|asr|stt|speech|audio-only|ocr)($|[-_/.0-9])/i;
+
+function isLikelyNonChatModel(id: string, meta?: Record<string, unknown>): boolean {
+  if (NON_CHAT_MODEL_RE.test(id)) return true;
+  if (meta) {
+    // OVHcloud & OpenAI-compatible registries set context_length=0 & max_completion_tokens=0 on TTS/ASR/Image models
+    const ctxLen = typeof meta.context_length === 'number' ? meta.context_length : null;
+    const maxComp = typeof meta.max_completion_tokens === 'number' ? meta.max_completion_tokens : null;
+    if (ctxLen === 0 && (maxComp === 0 || maxComp === null)) return true;
+    if (Array.isArray(meta.output_modalities) && meta.output_modalities.length > 0) {
+      const outs = meta.output_modalities.map((x) => String(x).toLowerCase());
+      if (!outs.includes('text')) return true;
+    }
+  }
+  return false;
+}
+
 /**
- * Extracts model identifiers from OpenAI `/v1/models`, Ollama `/api/tags`, or plain arrays.
+ * Separates chat-capable LLM IDs from non-chat models (TTS, Whisper ASR, Embeddings, Image-only)
+ * so chat pickers never default to models that return HTTP 404 on /v1/chat/completions.
  */
-export function extractModelIds(parsedJson: unknown): string[] {
-  if (!parsedJson) return [];
-  const ids: string[] = [];
-  const pushUnique = (val: unknown) => {
-    if (typeof val === 'string' && val.trim() && !ids.includes(val.trim())) {
-      ids.push(val.trim());
+export function categorizeModelIds(parsedJson: unknown): {
+  chatModels: string[];
+  nonChatModels: string[];
+  allModels: string[];
+} {
+  if (!parsedJson) return { chatModels: [], nonChatModels: [], allModels: [] };
+  const chatModels: string[] = [];
+  const nonChatModels: string[] = [];
+  const seen = new Set<string>();
+
+  const register = (rawId: unknown, meta?: Record<string, unknown>) => {
+    if (typeof rawId !== 'string') return;
+    const id = rawId.trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    if (isLikelyNonChatModel(id, meta)) {
+      nonChatModels.push(id);
+    } else {
+      chatModels.push(id);
     }
   };
 
-  if (Array.isArray(parsedJson)) {
-    for (const item of parsedJson) {
-      if (typeof item === 'string') pushUnique(item);
-      else if (item && typeof item === 'object') {
-        pushUnique((item as Record<string, unknown>).id ?? (item as Record<string, unknown>).name);
-      }
+  const items: unknown[] = Array.isArray(parsedJson)
+    ? parsedJson
+    : typeof parsedJson === 'object'
+      ? Array.isArray((parsedJson as Record<string, unknown>).data)
+        ? ((parsedJson as Record<string, unknown>).data as unknown[])
+        : Array.isArray((parsedJson as Record<string, unknown>).models)
+          ? ((parsedJson as Record<string, unknown>).models as unknown[])
+          : []
+      : [];
+
+  for (const item of items) {
+    if (typeof item === 'string') {
+      register(item);
+    } else if (item && typeof item === 'object') {
+      const rec = item as Record<string, unknown>;
+      register(rec.id ?? rec.name ?? rec.model, rec);
     }
-    return ids.slice(0, 120);
   }
 
-  if (typeof parsedJson === 'object') {
-    const obj = parsedJson as Record<string, unknown>;
-    const list = Array.isArray(obj.data)
-      ? obj.data
-      : Array.isArray(obj.models)
-        ? obj.models
-        : [];
-    for (const item of list) {
-      if (typeof item === 'string') pushUnique(item);
-      else if (item && typeof item === 'object') {
-        const rec = item as Record<string, unknown>;
-        pushUnique(rec.id ?? rec.name ?? rec.model);
-      }
-    }
-  }
-  return ids.slice(0, 120);
+  const allModels = [...chatModels, ...nonChatModels].slice(0, 120);
+  return {
+    chatModels: chatModels.slice(0, 100),
+    nonChatModels: nonChatModels.slice(0, 40),
+    allModels,
+  };
 }
+
+/**
+ * Extracts model identifiers from OpenAI `/v1/models`, Ollama `/api/tags`, or plain arrays,
+ * prioritizing chat-capable LLM models first.
+ */
+export function extractModelIds(parsedJson: unknown): string[] {
+  return categorizeModelIds(parsedJson).allModels;
+}
+

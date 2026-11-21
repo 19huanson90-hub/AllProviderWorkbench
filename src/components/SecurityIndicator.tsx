@@ -65,6 +65,13 @@ export function TestStatusTag({ status }: { status: TestRunStatus }) {
           REDIRECT
         </span>
       );
+    case 'AUTH_REQUIRED':
+      return (
+        <span className="inline-flex items-center gap-1.5 font-mono text-xs font-medium text-teal-800">
+          <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          AUTH (401 · Aktiv)
+        </span>
+      );
     case 'WAF_PROTECTED':
       return (
         <span className="inline-flex items-center gap-1.5 font-mono text-xs font-medium text-amber-700">
