@@ -13,7 +13,10 @@ export type CodingToolId =
   | 'read_workspace_file'
   | 'search_workspace'
   | 'write_sandbox_file'
-  | 'search_notebook_knowledge';
+  | 'search_notebook_knowledge'
+  | 'inspect_code_outline'
+  | 'remember_fact'
+  | 'recall_memory';
 
 export interface WorkspaceTreeNode {
   name: string;
@@ -98,17 +101,34 @@ export const HF_SPACE_PRESETS: readonly HfSpacePreset[] = [
 ];
 
 export interface FreeUncensoredApiPreset {
-  id: 'api-airforce' | 'electronhub' | 'ovh-ai-endpoints' | 'pollinations';
+  id: 'notrack-ai' | 'api-airforce' | 'electronhub' | 'ovh-ai-endpoints' | 'pollinations';
   label: string;
   baseUrl: string;
   needsKey: boolean;
   keyPageUrl?: string;
+  docsUrl?: string;
+  webChatUrl?: string;
   defaultModel: string;
+  contextWindow?: number;
   models: readonly string[];
   warning: string;
 }
 
 export const FREE_UNCENSORED_API_PRESETS: readonly FreeUncensoredApiPreset[] = [
+  {
+    id: 'notrack-ai',
+    label: 'NoTrack.ai (Offizielle API · notrack-uncensored · 100K)',
+    baseUrl: 'https://api.notrack.ai/v1',
+    needsKey: true,
+    keyPageUrl: 'https://notrack.ai/api/keys',
+    docsUrl: 'https://notrack.ai/api/docs',
+    webChatUrl: 'https://notrack.ai/chat',
+    defaultModel: 'notrack-uncensored',
+    contextWindow: 100_000,
+    models: ['notrack-uncensored'],
+    warning:
+      'Offizielle OpenAI-kompatible NoTrack-API (100K Kontext, SSE-Streaming, native Tools, Zero-Logs). Start: $0,50 Gratis-Guthaben (7 Tage, E-Mail-Verifizierung für Key), danach Prepaid ($0,15/1M Input, auch USDT/USDC). Webchat notrack.ai/chat sperrt Bots (HTTP 403).',
+  },
   {
     id: 'api-airforce',
     label: 'Api.Airforce (23 unmoderierte Free-Modelle · Coding)',
@@ -116,6 +136,7 @@ export const FREE_UNCENSORED_API_PRESETS: readonly FreeUncensoredApiPreset[] = [
     needsKey: true,
     keyPageUrl: 'https://api.airforce',
     defaultModel: 'kimi-k2.7-code',
+    contextWindow: 65_536,
     models: [
       'kimi-k2.7-code',
       'mistral-code-latest',
@@ -136,6 +157,7 @@ export const FREE_UNCENSORED_API_PRESETS: readonly FreeUncensoredApiPreset[] = [
     needsKey: true,
     keyPageUrl: 'https://www.electronhub.ai',
     defaultModel: 'gemma-4-uncensored:free',
+    contextWindow: 32_768,
     models: [
       'gemma-4-uncensored:free',
       'hermes-4-70b',
@@ -150,6 +172,7 @@ export const FREE_UNCENSORED_API_PRESETS: readonly FreeUncensoredApiPreset[] = [
     baseUrl: 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1',
     needsKey: false,
     defaultModel: 'gpt-oss-20b',
+    contextWindow: 131_072,
     models: [
       'gpt-oss-20b',
       'Qwen3.8-27B',
@@ -165,6 +188,7 @@ export const FREE_UNCENSORED_API_PRESETS: readonly FreeUncensoredApiPreset[] = [
     baseUrl: 'https://text.pollinations.ai/openai',
     needsKey: false,
     defaultModel: 'openai-fast',
+    contextWindow: 65_536,
     models: ['openai-fast'],
     warning: '100 % ohne API-Key, liefert natives Thinking (`gpt-oss-20b`). Max. 1 Anfrage / 30 s pro IP; Antworten können öffentlich gecacht werden.',
   },
@@ -207,6 +231,21 @@ export const CODING_TOOL_DEFINITIONS: ReadonlyArray<{
     id: 'search_notebook_knowledge',
     label: 'Notebook-Wissen abfragen',
     description: 'Durchsucht Wissensdatenbank & Cross-Chat-Verlauf des aktiven Projekts.',
+  },
+  {
+    id: 'inspect_code_outline',
+    label: 'Code-Outline extrahieren',
+    description: 'Extrahiert Funktionen, Klassen, Typen & Routen inkl. Zeilennummern ohne Volltext-Overhead.',
+  },
+  {
+    id: 'remember_fact',
+    label: 'Dauerhaft merken (Gedächtnis)',
+    description: 'Speichert Fakten, Entscheidungen oder Präferenzen dauerhaft über alle Sitzungen (ohne Secrets).',
+  },
+  {
+    id: 'recall_memory',
+    label: 'Langzeit-Gedächtnis abrufen',
+    description: 'Durchsucht alle dauerhaft gemerkten Fakten & Verlaufseinträge.',
   },
 ];
 

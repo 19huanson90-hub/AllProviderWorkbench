@@ -1,5 +1,6 @@
-import { Check, Copy, ExternalLink, Image as ImageIcon } from 'lucide-react';
+import { Check, Copy, ExternalLink, GitCompareArrows, Image as ImageIcon } from 'lucide-react';
 import { Fragment, useState, type ReactNode } from 'react';
+import { hasSearchReplaceHunks } from '../lib/codingDiff.ts';
 import { extractCodeBlocksWithPaths, isAsciiDirectoryTree } from '../lib/codingTypes.ts';
 import { parseSafeMarkdownBlocks, sanitizeSafeHttpUrl } from '../lib/notebookEngine.ts';
 
@@ -83,10 +84,12 @@ function renderInlineFormatted(text: string): ReactNode[] {
 export function ChatMarkdownMessage({
   content,
   onApplyCode,
+  onPreviewDiff,
   applyCodeLabel,
 }: {
   content: string;
   onApplyCode?: (code: string, language: string, suggestedPath?: string) => void;
+  onPreviewDiff?: (code: string, language: string, suggestedPath?: string, isPatch?: boolean) => void;
   applyCodeLabel?: string;
 }) {
   const [copiedCodeIdx, setCopiedCodeIdx] = useState<number | null>(null);
@@ -150,6 +153,7 @@ export function ChatMarkdownMessage({
           codeFenceCounter++;
           const lang = (block.language || '').toLowerCase();
           const isTree = isAsciiDirectoryTree(block.code, lang);
+          const isPatch = hasSearchReplaceHunks(block.code);
           const inferredPath = inferredByFenceIndex.get(codeFenceCounter);
           const shortTarget = inferredPath ? inferredPath.replace(/^coding-workspace\//, '') : undefined;
 
@@ -157,15 +161,25 @@ export function ChatMarkdownMessage({
             <div key={idx} className="overflow-hidden rounded-md border border-slate-800 bg-slate-950">
               <div className="flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900 px-2.5 py-1 font-mono text-[10px] text-slate-400">
                 <span className="truncate">
-                  {block.language || 'code'}
+                  {isPatch ? 'SEARCH/REPLACE Patch' : block.language || 'code'}
                   {shortTarget ? ` · ${shortTarget}` : ''}
                 </span>
                 <div className="flex shrink-0 items-center gap-3">
-                  {onApplyCode && !isTree && (
+                  {onPreviewDiff && !isTree && (
+                    <button
+                      type="button"
+                      onClick={() => onPreviewDiff(block.code, block.language || 'text', inferredPath, isPatch)}
+                      className="inline-flex items-center gap-1 font-medium text-amber-300 hover:text-amber-200 whitespace-nowrap shrink-0"
+                    >
+                      <GitCompareArrows className="h-3 w-3" aria-hidden="true" />
+                      <span>{isPatch ? 'Patch prüfen (Diff)' : 'Diff prüfen'}</span>
+                    </button>
+                  )}
+                  {onApplyCode && !isTree && !isPatch && (
                     <button
                       type="button"
                       onClick={() => handleApplyCode(block.code, block.language || 'text', idx, inferredPath)}
-                      className="inline-flex items-center gap-1 font-medium text-teal-300 hover:text-teal-200"
+                      className="inline-flex items-center gap-1 font-medium text-teal-300 hover:text-teal-200 whitespace-nowrap shrink-0"
                     >
                       {appliedCodeIdx === idx ? (
                         <>
@@ -184,7 +198,7 @@ export function ChatMarkdownMessage({
                   <button
                     type="button"
                     onClick={() => void handleCopyCode(block.code, idx)}
-                    className="inline-flex items-center gap-1 text-slate-300 hover:text-white"
+                    className="inline-flex items-center gap-1 text-slate-300 hover:text-white whitespace-nowrap shrink-0"
                   >
                     {copiedCodeIdx === idx ? (
                       <>

@@ -768,18 +768,42 @@ export function CodingConnectionSettings(props: CodingConnectionSettingsProps) {
           <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-700">
             <div className="font-mono text-[10px] text-slate-500">{activeFreePreset.baseUrl}</div>
             <p className="mt-1 leading-snug">{activeFreePreset.warning}</p>
-            {activeFreePreset.keyPageUrl && (
-              <a
-                href={activeFreePreset.keyPageUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-1.5 inline-flex items-center gap-1 rounded border border-teal-200 bg-white px-2 py-0.5 text-[10px] font-medium text-teal-800 hover:bg-teal-50"
-              >
-                <KeyRound className="h-3 w-3" aria-hidden="true" />
-                <span>API-Key holen</span>
-                <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
-              </a>
-            )}
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {activeFreePreset.keyPageUrl && (
+                <a
+                  href={activeFreePreset.keyPageUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 rounded border border-teal-200 bg-white px-2 py-0.5 text-[10px] font-medium text-teal-800 hover:bg-teal-50"
+                >
+                  <KeyRound className="h-3 w-3" aria-hidden="true" />
+                  <span>API-Key holen</span>
+                  <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
+                </a>
+              )}
+              {activeFreePreset.docsUrl && (
+                <a
+                  href={activeFreePreset.docsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  <span>API-Doku</span>
+                  <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
+                </a>
+              )}
+              {activeFreePreset.webChatUrl && (
+                <a
+                  href={activeFreePreset.webChatUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  <span>Web-Chat</span>
+                  <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
+                </a>
+              )}
+            </div>
           </div>
 
           <div>

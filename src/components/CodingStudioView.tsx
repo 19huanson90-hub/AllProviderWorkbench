@@ -11,15 +11,20 @@ import {
   Copy,
   Cpu,
   Download,
+  Eye,
   FileCode2,
   FilePlus2,
   FileText,
   Folder,
   FolderOpen,
   FolderTree,
+  GitCompareArrows,
+  History,
   Image as ImageIcon,
   Maximize2,
   MessageSquarePlus,
+  Mic,
+  MicOff,
   Minimize2,
   Network,
   Paperclip,
@@ -32,8 +37,11 @@ import {
   Settings2,
   Sparkles,
   Square,
+  Terminal,
   Trash2,
   Upload,
+  Volume2,
+  VolumeX,
   Wrench,
   X,
   Zap,
@@ -44,6 +52,21 @@ import {
   resolveVerifiedBridgeModelOptions,
   type ChatTargetType,
 } from '../lib/chatEngine.ts';
+import {
+  applySearchReplacePatches,
+  buildDiffModeInstruction,
+  parseSearchReplaceBlocks,
+  type FileCheckpoint,
+} from '../lib/codingDiff.ts';
+import {
+  compileMemorySystemBlock,
+  createDefaultMemoryStore,
+  estimateContextTokenBudget,
+  type CodingMemoryCategory,
+  type CodingMemoryStore,
+} from '../lib/codingMemory.ts';
+import type { SandboxExecutionResult } from '../lib/codingSandboxRunner.ts';
+import { createSseFrameParser } from '../lib/codingStream.ts';
 import {
   buildCloudNotebookIpynb,
   buildCloudNotebookScript,
@@ -84,11 +107,15 @@ import type {
   ClassifiedProvider,
 } from '../lib/types.ts';
 import { ChatMarkdownMessage } from './ChatMarkdownMessage.tsx';
+import { CodingCodeEditor, supportsLivePreview } from './CodingCodeEditor.tsx';
 import {
   CodingConnectionSettings,
   type HfSpaceStatusRow,
   type HordeLiveModel,
 } from './CodingConnectionSettings.tsx';
+import { CodingDiffModal, type PendingDiffReview } from './CodingDiffModal.tsx';
+import { CodingGadgetsPanel } from './CodingGadgetsPanel.tsx';
+import { CodingSandboxRunnerPanel } from './CodingSandboxRunnerPanel.tsx';
 
 interface VirtualCodeFile {
   path: string;
@@ -162,7 +189,7 @@ const MAIN_CONNECTION_WAYS: ReadonlyArray<{
 }> = [
   { id: 'hf_space', shortLabel: '1. HF ZeroGPU Space', subtitle: 'Ohne Key · 30B Abliterated' },
   { id: 'ai_horde', shortLabel: '2. AI Horde', subtitle: 'Anonym · 37+ Uncensored' },
-  { id: 'free_uncensored_api', shortLabel: '3. Free Uncensored APIs', subtitle: 'Airforce · ElectronHub · OVH' },
+  { id: 'free_uncensored_api', shortLabel: '3. Uncensored APIs', subtitle: 'NoTrack · Airforce · OVH' },
   { id: 'cloud_tunnel', shortLabel: '4. Cloud-GPU Tunnel', subtitle: 'Kaggle 2×T4 / Colab Ollama' },
   { id: 'catalog_or_bridge', shortLabel: 'Weitere', subtitle: 'Katalog & Bridges' },
 ];
@@ -308,10 +335,168 @@ export function CodingStudioView({
   const [chatMaximized, setChatMaximized] = useState<boolean>(false);
   const [showExplorerPanel, setShowExplorerPanel] = useState<boolean>(true);
   const [showRightDrawer, setShowRightDrawer] = useState<boolean>(true);
-  const [rightTab, setRightTab] = useState<'connection' | 'tools' | 'notebooks'>('connection');
+  const [rightTab, setRightTab] = useState<'connection' | 'tools' | 'notebooks' | 'gadgets'>('connection');
   const [expandedThinkingIds, setExpandedThinkingIds] = useState<Record<string, boolean>>({});
   const [expandedToolIds, setExpandedToolIds] = useState<Record<string, boolean>>({});
   const [warningDetailsOpen, setWarningDetailsOpen] = useState<boolean>(false);
+
+  // =========================================================================
+  // Persistent Long-Term Memory ("Merkender Verlauf") & Local Browser Voice
+  // =========================================================================
+  const [memoryStore, setMemoryStore] = useState<CodingMemoryStore>(() => createDefaultMemoryStore());
+  const [rememberedMsgId, setRememberedMsgId] = useState<string | null>(null);
+  const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
+  const [dictating, setDictating] = useState<boolean>(false);
+  const speechRecRef = useRef<{ stop: () => void } | null>(null);
+
+  const speechSttSupported =
+    typeof window !== 'undefined' &&
+    Boolean(
+      (window as unknown as Record<string, unknown>).SpeechRecognition ||
+        (window as unknown as Record<string, unknown>).webkitSpeechRecognition
+    );
+  const speechTtsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
+
+  const refreshCodingMemory = useCallback(async () => {
+    try {
+      const res = await fetch('/api/coding/memory');
+      if (!res.ok) return;
+      const json = (await res.json()) as { ok?: boolean; store?: CodingMemoryStore };
+      if (json.ok && json.store) {
+        setMemoryStore(json.store);
+      }
+    } catch {
+      // ignore offline memory load error
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshCodingMemory();
+  }, [refreshCodingMemory]);
+
+  const handleSaveMemoryEntry = async (entry: {
+    title: string;
+    content: string;
+    category: CodingMemoryCategory;
+    source?: 'user' | 'assistant' | 'tool';
+  }) => {
+    const res = await fetch('/api/coding/memory/entry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entry),
+    });
+    if (res.ok) {
+      const json = (await res.json()) as { ok?: boolean; store?: CodingMemoryStore };
+      if (json.ok && json.store) setMemoryStore(json.store);
+    }
+  };
+
+  const handleUpdateMemoryStore = async (nextStore: CodingMemoryStore) => {
+    setMemoryStore(nextStore);
+    const res = await fetch('/api/coding/memory', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nextStore),
+    });
+    if (res.ok) {
+      const json = (await res.json()) as { ok?: boolean; store?: CodingMemoryStore };
+      if (json.ok && json.store) setMemoryStore(json.store);
+    }
+  };
+
+  const handleDeleteMemoryEntry = async (id: string) => {
+    const res = await fetch(`/api/coding/memory/entry/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (res.ok) {
+      const json = (await res.json()) as { ok?: boolean; store?: CodingMemoryStore };
+      if (json.ok && json.store) setMemoryStore(json.store);
+    }
+  };
+
+  const handleImportMemoryStore = async (raw: unknown): Promise<{ ok: boolean; error?: string }> => {
+    const res = await fetch('/api/coding/memory', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(raw),
+    });
+    const json = (await res.json()) as { ok?: boolean; store?: CodingMemoryStore; error?: string };
+    if (res.ok && json.ok && json.store) {
+      setMemoryStore(json.store);
+      return { ok: true };
+    }
+    return { ok: false, error: json.error || 'Import fehlgeschlagen.' };
+  };
+
+  const handleRememberMessage = async (msg: NotebookChatMessage) => {
+    const firstLine = msg.content.split('\n').find((l) => l.trim().length > 4)?.replace(/^#+\s*/, '').trim() || 'Chat-Notiz';
+    await handleSaveMemoryEntry({
+      title: firstLine.slice(0, 72),
+      content: msg.content.slice(0, 1400),
+      category: 'fact',
+      source: 'assistant',
+    });
+    setRememberedMsgId(msg.id);
+    setTimeout(() => setRememberedMsgId(null), 1600);
+  };
+
+  const handleToggleSpeakMessage = (msg: NotebookChatMessage) => {
+    if (!speechTtsSupported) return;
+    const synth = window.speechSynthesis;
+    if (speakingMsgId === msg.id) {
+      synth.cancel();
+      setSpeakingMsgId(null);
+      return;
+    }
+    synth.cancel();
+    const plain = msg.content.replace(/```[\s\S]*?```/g, ' Codeblock. ').replace(/[#*_`]/g, ' ').slice(0, 2800);
+    const utt = new SpeechSynthesisUtterance(plain);
+    utt.lang = 'de-DE';
+    utt.onend = () => setSpeakingMsgId(null);
+    utt.onerror = () => setSpeakingMsgId(null);
+    setSpeakingMsgId(msg.id);
+    synth.speak(utt);
+  };
+
+  const handleToggleDictation = () => {
+    if (!speechSttSupported) return;
+    if (dictating) {
+      speechRecRef.current?.stop();
+      setDictating(false);
+      return;
+    }
+    const win = window as unknown as Record<string, unknown>;
+    const Ctor = (win.SpeechRecognition || win.webkitSpeechRecognition) as
+      | (new () => {
+          lang: string;
+          interimResults: boolean;
+          continuous: boolean;
+          onresult: ((ev: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+          onerror: (() => void) | null;
+          onend: (() => void) | null;
+          start: () => void;
+          stop: () => void;
+        })
+      | undefined;
+    if (!Ctor) return;
+    const rec = new Ctor();
+    rec.lang = 'de-DE';
+    rec.interimResults = false;
+    rec.continuous = false;
+    rec.onresult = (ev) => {
+      const chunks: string[] = [];
+      for (let i = 0; i < ev.results.length; i++) {
+        const t = ev.results[i]?.[0]?.transcript;
+        if (t) chunks.push(t.trim());
+      }
+      if (chunks.length > 0) {
+        setPromptInput((prev) => `${prev ? `${prev.trimEnd()} ` : ''}${chunks.join(' ')}`);
+      }
+    };
+    rec.onerror = () => setDictating(false);
+    rec.onend = () => setDictating(false);
+    speechRecRef.current = rec;
+    setDictating(true);
+    rec.start();
+  };
 
   // =========================================================================
   // Persistent Projects / Notebooks & Knowledge Base (synced with /api/notebooks)
@@ -414,11 +599,55 @@ export function CodingStudioView({
   const [showNewFileInput, setShowNewFileInput] = useState<boolean>(false);
   const [newFileName, setNewFileName] = useState<string>('coding-workspace/app.ts');
 
+  // Stage 1: Diff-Mode, Diff-Review Modal, Checkpoints, Live-Preview, Sandbox Runner & Live Stream
+  const [diffModeEnabled, setDiffModeEnabled] = useState<boolean>(false);
+  const [pendingDiffReview, setPendingDiffReview] = useState<PendingDiffReview | null>(null);
+  const [applyingDiff, setApplyingDiff] = useState<boolean>(false);
+  const [checkpoints, setCheckpoints] = useState<FileCheckpoint[]>([]);
+  const [editorPreviewMode, setEditorPreviewMode] = useState<boolean>(false);
+  const [showSandboxRunner, setShowSandboxRunner] = useState<boolean>(false);
+  const [liveStream, setLiveStream] = useState<{
+    status: string;
+    content: string;
+    thinking: string;
+    toolEvents: CodingToolEvent[];
+  } | null>(null);
+
   const folderUploadRef = useRef<HTMLInputElement | null>(null);
   const multiFileUploadRef = useRef<HTMLInputElement | null>(null);
   const chatAttachmentRef = useRef<HTMLInputElement | null>(null);
 
   const activeFile = activeFilePath ? filesMap[activeFilePath] ?? null : null;
+
+  const sandboxFilePaths = useMemo(() => {
+    const found = new Set<string>();
+    const walk = (nodes: WorkspaceTreeNode[]) => {
+      for (const n of nodes) {
+        if (n.type === 'file' && n.path.startsWith('coding-workspace/')) {
+          found.add(n.path);
+        } else if (n.type === 'dir' && n.children) {
+          walk(n.children);
+        }
+      }
+    };
+    walk(treeNodes);
+    for (const p of Object.keys(filesMap)) {
+      if (p.startsWith('coding-workspace/')) found.add(p);
+    }
+    return Array.from(found).sort((a, b) => a.localeCompare(b, 'de'));
+  }, [treeNodes, filesMap]);
+
+  const activeFileCheckpoints = useMemo(
+    () => (activeFile ? checkpoints.filter((cp) => cp.path === activeFile.path) : []),
+    [checkpoints, activeFile]
+  );
+
+  // Reset preview toggle when switching to a non-previewable file
+  useEffect(() => {
+    if (!activeFile || !supportsLivePreview(activeFile.path, activeFile.language)) {
+      setEditorPreviewMode(false);
+    }
+  }, [activeFile?.path, activeFile?.language]);
 
   const loadServerWorkspace = useCallback(async (subDir = '') => {
     setTreeLoading(true);
@@ -706,11 +935,75 @@ export function CodingStudioView({
     []
   );
 
+  const readExistingSandboxContent = useCallback(
+    async (
+      targetPath: string,
+      bypassCache = false
+    ): Promise<{ exists: boolean; content: string; language: string }> => {
+      if (!bypassCache) {
+        const cached = filesMap[targetPath];
+        if (cached) {
+          return { exists: true, content: cached.content, language: cached.language };
+        }
+      }
+      try {
+        const res = await fetch(`/api/coding/workspace/file?path=${encodeURIComponent(targetPath)}`);
+        if (res.ok) {
+          const json = (await res.json()) as { ok: boolean; content?: string; language?: string };
+          if (json.ok && typeof json.content === 'string') {
+            return {
+              exists: true,
+              content: json.content,
+              language: json.language || guessLanguage(targetPath),
+            };
+          }
+        }
+      } catch {
+        // file does not exist yet
+      }
+      return { exists: false, content: '', language: guessLanguage(targetPath) };
+    },
+    [filesMap]
+  );
+
+  const recordFileCheckpoint = useCallback(
+    (filePath: string, previousContent: string, language: string, reason: string) => {
+      setCheckpoints((prev) => [
+        {
+          id: createId('cp'),
+          path: filePath,
+          previousContent,
+          language,
+          createdAt: new Date().toLocaleTimeString('de-DE'),
+          reason,
+        },
+        ...prev.slice(0, 29),
+      ]);
+    },
+    []
+  );
+
+  const handleRollbackCheckpoint = async (filePath: string) => {
+    const idx = checkpoints.findIndex((cp) => cp.path === filePath);
+    if (idx === -1) return;
+    const cp = checkpoints[idx];
+    const savedPath = await writeFileToLocalSandbox(cp.path, cp.previousContent, cp.language);
+    if (!savedPath) return;
+    setCheckpoints((prev) => prev.filter((_, i) => i !== idx));
+    setActiveFilePath(savedPath);
+    setFileStatusMsg(`Checkpoint (${cp.createdAt}) wiederhergestellt: ${savedPath}`);
+    void loadServerWorkspace(serverSubDir);
+  };
+
   const handleSaveActiveFile = async () => {
     if (!activeFile) return;
     const targetPath = activeFile.path.startsWith('coding-workspace/')
       ? activeFile.path
       : `coding-workspace/${activeFile.path.split('/').pop() || 'snippet.txt'}`;
+    const prevDisk = await readExistingSandboxContent(targetPath, true);
+    if (prevDisk.exists && prevDisk.content !== activeFile.content) {
+      recordFileCheckpoint(targetPath, prevDisk.content, prevDisk.language, 'Editor-Speichern');
+    }
     const savedPath = await writeFileToLocalSandbox(targetPath, activeFile.content, activeFile.language);
     if (!savedPath) return;
     setActiveFilePath(savedPath);
@@ -736,7 +1029,7 @@ export function CodingStudioView({
     URL.revokeObjectURL(url);
   };
 
-  const handleApplyCodeBlock = async (code: string, language: string, suggestedPath?: string) => {
+  const resolveCodeTargetPath = (language: string, suggestedPath?: string): string => {
     const extMap: Record<string, string> = {
       typescript: 'ts',
       ts: 'ts',
@@ -754,14 +1047,87 @@ export function CodingStudioView({
       bash: 'sh',
       sh: 'sh',
       sql: 'sql',
+      markdown: 'md',
+      md: 'md',
     };
     const ext = extMap[language.toLowerCase()] || 'txt';
-    const targetPath =
-      suggestedPath && suggestedPath.trim()
-        ? suggestedPath.trim()
-        : activeFile && activeFile.path.startsWith('coding-workspace/')
-          ? activeFile.path
-          : `coding-workspace/generated.${ext}`;
+    if (suggestedPath && suggestedPath.trim()) return suggestedPath.trim();
+    if (activeFile && activeFile.path.startsWith('coding-workspace/')) return activeFile.path;
+    return `coding-workspace/generated.${ext}`;
+  };
+
+  const handlePreviewDiff = async (
+    code: string,
+    language: string,
+    suggestedPath?: string,
+    isPatch = false
+  ) => {
+    const hunks = isPatch ? parseSearchReplaceBlocks(code) : [];
+    const patchHintPath = hunks.find((h) => h.targetPath)?.targetPath;
+    const targetPath = resolveCodeTargetPath(language, suggestedPath || patchHintPath);
+    const existing = await readExistingSandboxContent(targetPath);
+
+    if (isPatch && hunks.length > 0) {
+      const applied = applySearchReplacePatches(existing.content, hunks);
+      setPendingDiffReview({
+        targetPath,
+        language: existing.language || guessLanguage(targetPath),
+        oldContent: existing.content,
+        newContent: applied.appliedCount > 0 ? applied.content : existing.content,
+        mode: 'patch',
+        appliedHunks: applied.appliedCount,
+        totalHunks: hunks.length,
+        warning: applied.error,
+      });
+      return;
+    }
+
+    setPendingDiffReview({
+      targetPath,
+      language: language || existing.language || guessLanguage(targetPath),
+      oldContent: existing.content,
+      newContent: code,
+      mode: existing.exists ? 'overwrite' : 'create',
+    });
+  };
+
+  const handleConfirmPendingDiff = async () => {
+    if (!pendingDiffReview || applyingDiff) return;
+    setApplyingDiff(true);
+    try {
+      if (pendingDiffReview.oldContent !== pendingDiffReview.newContent) {
+        recordFileCheckpoint(
+          pendingDiffReview.targetPath,
+          pendingDiffReview.oldContent,
+          pendingDiffReview.language,
+          pendingDiffReview.mode === 'patch' ? 'SEARCH/REPLACE-Patch' : 'Diff-Übernahme'
+        );
+      }
+      const savedPath = await writeFileToLocalSandbox(
+        pendingDiffReview.targetPath,
+        pendingDiffReview.newContent,
+        pendingDiffReview.language
+      );
+      if (savedPath) {
+        setActiveFilePath(savedPath);
+        setPinnedFilePaths((prev) => (prev.includes(savedPath) ? prev : [...prev, savedPath]));
+        setExpandedDirs((prev) => ({ ...prev, 'coding-workspace': true }));
+        setShowExplorerPanel(true);
+        setFileStatusMsg(`Diff übernommen (Checkpoint angelegt): ${savedPath}`);
+        void loadServerWorkspace(serverSubDir);
+      }
+      setPendingDiffReview(null);
+    } finally {
+      setApplyingDiff(false);
+    }
+  };
+
+  const handleApplyCodeBlock = async (code: string, language: string, suggestedPath?: string) => {
+    const targetPath = resolveCodeTargetPath(language, suggestedPath);
+    const existing = await readExistingSandboxContent(targetPath);
+    if (existing.exists && existing.content !== code) {
+      recordFileCheckpoint(targetPath, existing.content, existing.language, 'Codeblock gespeichert');
+    }
 
     const savedPath = await writeFileToLocalSandbox(targetPath, code, language || guessLanguage(targetPath));
     if (!savedPath) return;
@@ -1186,7 +1552,9 @@ export function CodingStudioView({
   const messages = activeChat?.messages ?? [];
 
   useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messages.length > 0 || sending) {
+      chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages.length, sending]);
 
   const isActiveWayConfirmed = activeWay === 'catalog_or_bridge' || Boolean(warningConfirmed[activeWay]);
@@ -1299,14 +1667,23 @@ export function CodingStudioView({
     setPromptInput('');
     setPendingUploads([]);
     setSending(true);
+    setLiveStream({
+      status: `Verbinde mit ${activeTargetLabel} (${activeDisplayModel})…`,
+      content: '',
+      thinking: '',
+      toolEvents: [],
+    });
 
-    // Build structured coding system prompt: Role + Thinking + Tree + Active/Pinned Files + Notebooks RAG
+    // Build structured coding system prompt: Role + Thinking + Diff-Mode + Tree + Active/Pinned Files + Notebooks RAG
     const sysSections: string[] = [];
     if (CODING_ROLE_PROMPTS[codingRole].prompt) {
       sysSections.push(CODING_ROLE_PROMPTS[codingRole].prompt);
     }
     if (THINKING_PROMPTS[thinkingMode]) {
       sysSections.push(THINKING_PROMPTS[thinkingMode]);
+    }
+    if (diffModeEnabled) {
+      sysSections.push(buildDiffModeInstruction());
     }
     if (customSystemPrompt.trim()) {
       sysSections.push(customSystemPrompt.trim());
@@ -1368,108 +1745,12 @@ export function CodingStudioView({
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
-    try {
-      const parsedSeed = seedValue.trim() ? Number.parseInt(seedValue.trim(), 10) : undefined;
-      const res = await fetch('/api/coding/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: ctrl.signal,
-        body: JSON.stringify({
-          way: activeWay,
-          warningAcknowledged: isActiveWayConfirmed,
-          activeProjectId: activeProject.id,
-          enabledTools,
-          messages: historyPayload,
-          systemPrompt: sysSections.join('\n\n').slice(0, 31500),
-          images: imageUploads.map((i) => i.dataUrl),
-          thinkingMode,
-          temperature,
-          maxTokens,
-          topP,
-          topK,
-          repetitionPenalty,
-          presencePenalty,
-          frequencyPenalty,
-          seed: Number.isInteger(parsedSeed) ? parsedSeed : undefined,
-          // Weg 1: HF ZeroGPU Space
-          hfSpaceId,
-          hfToken: hfToken.trim() || undefined,
-          gpuDuration,
-          useDflash,
-          // Weg 2: AI Horde
-          hordeModel: hordeModel.trim() || undefined,
-          hordeApiKey: hordeApiKey.trim() || undefined,
-          hordeMaxLength,
-          hordeMaxContextLength,
-          hordeRepPen,
-          hordeTrustedWorkers,
-          hordeSlowWorkers,
-          hordeAllowDowngrade,
-          // Weg 3: Free Uncensored API
-          freeApiPresetId,
-          // Weg 4: Cloud-GPU Tunnel
-          tunnelUrl: tunnelUrl.trim() || undefined,
-          numCtx: tunnelNumCtx,
-          // Model & Key routed by active way
-          model: activeDisplayModel,
-          apiKey:
-            activeWay === 'free_uncensored_api'
-              ? freeApiKey.trim() || undefined
-              : activeWay === 'cloud_tunnel'
-                ? tunnelToken.trim() || undefined
-                : apiKey.trim() || undefined,
-          // Weg 5: Catalog / Bridges fallback
-          targetType,
-          bridgeId: targetType === 'bridge' ? selectedBridgeId : undefined,
-          providerId: targetType === 'provider' ? selectedProviderId : undefined,
-          endpointUrl,
-        }),
-      });
+    let streamedContent = '';
+    let streamedThinking = '';
+    const streamedToolEvents: CodingToolEvent[] = [];
+    let finalReceived = false;
 
-      const json = (await res.json()) as {
-        ok: boolean;
-        reply?: string;
-        thinking?: string;
-        model?: string;
-        latencyMs?: number;
-        httpStatus?: number;
-        targetUrl?: string;
-        error?: string;
-        rawPreview?: string;
-        toolEvents?: CodingToolEvent[];
-        writtenFiles?: string[];
-        meta?: Record<string, unknown>;
-        usage?: NotebookChatMessage['usage'];
-      };
-
-      const replyMsg: NotebookChatMessage = json.ok && typeof json.reply === 'string'
-        ? {
-            id: createId('a'),
-            role: 'assistant',
-            content: json.reply,
-            thinking: json.thinking,
-            toolEvents: json.toolEvents,
-            providerMeta: json.meta,
-            createdAt: new Date().toLocaleTimeString('de-DE'),
-            model: json.model || activeDisplayModel,
-            latencyMs: json.latencyMs,
-            httpStatus: json.httpStatus,
-            targetUrl: json.targetUrl,
-            contextSources: rag.citations.length > 0 ? rag.citations : undefined,
-            usage: json.usage,
-          }
-        : {
-            id: createId('e'),
-            role: 'error',
-            content: json.error || `HTTP ${json.httpStatus || res.status}`,
-            createdAt: new Date().toLocaleTimeString('de-DE'),
-            latencyMs: json.latencyMs,
-            httpStatus: json.httpStatus || res.status,
-            targetUrl: json.targetUrl,
-            rawPreview: json.rawPreview,
-            toolEvents: json.toolEvents,
-          };
-
+    const appendReplyToChat = (replyMsg: NotebookChatMessage) => {
       updateNotebookWs((ws) => ({
         ...ws,
         projects: ws.projects.map((p) =>
@@ -1486,44 +1767,268 @@ export function CodingStudioView({
             : p
         ),
       }));
+    };
 
-      // If workspace tool wrote a file to coding-workspace/, refresh server tree & open it in editor!
-      if (json.ok && Array.isArray(json.writtenFiles) && json.writtenFiles.length > 0) {
-        const lastWritten = json.writtenFiles[json.writtenFiles.length - 1];
-        void loadServerWorkspace(serverSubDir);
-        setFilesMap((prev) => {
-          const copy = { ...prev };
-          delete copy[lastWritten];
-          return copy;
+    try {
+      const parsedSeed = seedValue.trim() ? Number.parseInt(seedValue.trim(), 10) : undefined;
+      const res = await fetch('/api/coding/chat/stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          way: activeWay,
+          warningAcknowledged: isActiveWayConfirmed,
+          activeProjectId: activeProject.id,
+          enabledTools,
+          usePersistentMemory: memoryStore.autoInject,
+          messages: historyPayload,
+          systemPrompt: sysSections.join('\n\n').slice(0, 31500),
+          images: imageUploads.map((i) => i.dataUrl),
+          thinkingMode,
+          temperature,
+          maxTokens,
+          topP,
+          topK,
+          repetitionPenalty,
+          presencePenalty,
+          frequencyPenalty,
+          seed: Number.isInteger(parsedSeed) ? parsedSeed : undefined,
+          hfSpaceId,
+          hfToken: hfToken.trim() || undefined,
+          gpuDuration,
+          useDflash,
+          hordeModel: hordeModel.trim() || undefined,
+          hordeApiKey: hordeApiKey.trim() || undefined,
+          hordeMaxLength,
+          hordeMaxContextLength,
+          hordeRepPen,
+          hordeTrustedWorkers,
+          hordeSlowWorkers,
+          hordeAllowDowngrade,
+          freeApiPresetId,
+          tunnelUrl: tunnelUrl.trim() || undefined,
+          numCtx: tunnelNumCtx,
+          model: activeDisplayModel,
+          apiKey:
+            activeWay === 'free_uncensored_api'
+              ? freeApiKey.trim() || undefined
+              : activeWay === 'cloud_tunnel'
+                ? tunnelToken.trim() || undefined
+                : apiKey.trim() || undefined,
+          targetType,
+          bridgeId: targetType === 'bridge' ? selectedBridgeId : undefined,
+          providerId: targetType === 'provider' ? selectedProviderId : undefined,
+          endpointUrl,
+        }),
+      });
+
+      if (!res.body) {
+        throw new Error(`HTTP ${res.status}: Kein Antwort-Stream verfügbar.`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      const streamOutcome: {
+        done: {
+          ok: boolean;
+          reply?: string;
+          thinking?: string;
+          model?: string;
+          latencyMs?: number;
+          httpStatus?: number;
+          targetUrl?: string;
+          error?: string;
+          rawPreview?: string;
+          toolEvents?: CodingToolEvent[];
+          writtenFiles?: string[];
+          meta?: Record<string, unknown>;
+          usage?: NotebookChatMessage['usage'];
+        } | null;
+        err: {
+          error: string;
+          httpStatus?: number;
+          targetUrl?: string;
+          rawPreview?: string;
+          latencyMs?: number;
+          toolEvents?: CodingToolEvent[];
+        } | null;
+      } = { done: null, err: null };
+
+      const parser = createSseFrameParser((ev) => {
+        if (ev.type === 'status') {
+          setLiveStream((prev) =>
+            prev ? { ...prev, status: ev.message } : { status: ev.message, content: '', thinking: '', toolEvents: [] }
+          );
+        } else if (ev.type === 'thinking') {
+          streamedThinking += ev.delta;
+          setLiveStream((prev) =>
+            prev
+              ? { ...prev, status: 'Denkt nach (Live-Stream)…', thinking: streamedThinking }
+              : { status: 'Denkt nach…', content: streamedContent, thinking: streamedThinking, toolEvents: streamedToolEvents }
+          );
+        } else if (ev.type === 'token') {
+          streamedContent += ev.delta;
+          setLiveStream((prev) =>
+            prev
+              ? { ...prev, status: 'Streamt Antwort live…', content: streamedContent }
+              : { status: 'Streamt Antwort live…', content: streamedContent, thinking: streamedThinking, toolEvents: streamedToolEvents }
+          );
+        } else if (ev.type === 'tool') {
+          streamedToolEvents.push(ev.event);
+          setLiveStream((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  status: `Tool ausgeführt: ${ev.event.tool}`,
+                  toolEvents: [...streamedToolEvents],
+                }
+              : {
+                  status: `Tool ausgeführt: ${ev.event.tool}`,
+                  content: streamedContent,
+                  thinking: streamedThinking,
+                  toolEvents: [...streamedToolEvents],
+                }
+          );
+        } else if (ev.type === 'done') {
+          streamOutcome.done = ev.payload;
+          finalReceived = true;
+        } else if (ev.type === 'error') {
+          streamOutcome.err = ev;
+          finalReceived = true;
+        }
+      });
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parser.push(decoder.decode(value, { stream: true }));
+      }
+      parser.flush();
+
+      const dp = streamOutcome.done;
+      const se = streamOutcome.err;
+
+      if (dp && dp.ok && typeof dp.reply === 'string') {
+        appendReplyToChat({
+          id: createId('a'),
+          role: 'assistant',
+          content: dp.reply || streamedContent,
+          thinking: dp.thinking || streamedThinking || undefined,
+          toolEvents: dp.toolEvents || (streamedToolEvents.length > 0 ? streamedToolEvents : undefined),
+          providerMeta: dp.meta,
+          createdAt: new Date().toLocaleTimeString('de-DE'),
+          model: dp.model || activeDisplayModel,
+          latencyMs: dp.latencyMs,
+          httpStatus: dp.httpStatus,
+          targetUrl: dp.targetUrl,
+          contextSources: rag.citations.length > 0 ? rag.citations : undefined,
+          usage: dp.usage,
         });
-        setTimeout(() => {
-          void openWorkspaceFile(lastWritten);
-        }, 250);
+
+        if (dp.meta && dp.meta.memoryUpdated === true) {
+          void refreshCodingMemory();
+        }
+        if (Array.isArray(dp.writtenFiles) && dp.writtenFiles.length > 0) {
+          const lastWritten = dp.writtenFiles[dp.writtenFiles.length - 1];
+          void loadServerWorkspace(serverSubDir);
+          setFilesMap((prev) => {
+            const copy = { ...prev };
+            delete copy[lastWritten];
+            return copy;
+          });
+          setTimeout(() => {
+            void openWorkspaceFile(lastWritten);
+          }, 250);
+        }
+      } else if (se) {
+        appendReplyToChat({
+          id: createId('e'),
+          role: 'error',
+          content: se.error,
+          createdAt: new Date().toLocaleTimeString('de-DE'),
+          latencyMs: se.latencyMs,
+          httpStatus: se.httpStatus || res.status,
+          targetUrl: se.targetUrl,
+          rawPreview: se.rawPreview,
+          toolEvents: se.toolEvents || (streamedToolEvents.length > 0 ? streamedToolEvents : undefined),
+        });
+      } else if (streamedContent.trim()) {
+        appendReplyToChat({
+          id: createId('a'),
+          role: 'assistant',
+          content: streamedContent,
+          thinking: streamedThinking || undefined,
+          toolEvents: streamedToolEvents.length > 0 ? streamedToolEvents : undefined,
+          createdAt: new Date().toLocaleTimeString('de-DE'),
+          model: activeDisplayModel,
+          contextSources: rag.citations.length > 0 ? rag.citations : undefined,
+        });
+      } else {
+        appendReplyToChat({
+          id: createId('e'),
+          role: 'error',
+          content: `Keine Antwort vom Stream erhalten (HTTP ${res.status}).`,
+          createdAt: new Date().toLocaleTimeString('de-DE'),
+          httpStatus: res.status,
+        });
       }
     } catch (err: unknown) {
       const aborted = err instanceof Error && err.name === 'AbortError';
-      const errMsg: NotebookChatMessage = {
-        id: createId('e'),
-        role: 'error',
-        content: aborted ? 'Anfrage vom Benutzer abgebrochen.' : 'Netzwerkfehler beim Senden.',
-        createdAt: new Date().toLocaleTimeString('de-DE'),
-      };
-      updateNotebookWs((ws) => ({
-        ...ws,
-        projects: ws.projects.map((p) =>
-          p.id === activeProject.id
-            ? {
-                ...p,
-                chats: p.chats.map((c) =>
-                  c.id === targetChatId ? { ...c, messages: [...c.messages, errMsg] } : c
-                ),
-              }
-            : p
-        ),
-      }));
+      if (!finalReceived) {
+        if (aborted && (streamedContent.trim() || streamedThinking.trim())) {
+          // Preserve partial streamed response on manual Stop!
+          appendReplyToChat({
+            id: createId('a'),
+            role: 'assistant',
+            content: `${streamedContent.trim()}\n\n> *[Stream vom Benutzer gestoppt — bisherige Teilantwort erhalten]*`,
+            thinking: streamedThinking || undefined,
+            toolEvents: streamedToolEvents.length > 0 ? streamedToolEvents : undefined,
+            createdAt: new Date().toLocaleTimeString('de-DE'),
+            model: activeDisplayModel,
+            contextSources: rag.citations.length > 0 ? rag.citations : undefined,
+          });
+        } else {
+          appendReplyToChat({
+            id: createId('e'),
+            role: 'error',
+            content: aborted
+              ? 'Anfrage vom Benutzer abgebrochen.'
+              : err instanceof Error
+                ? `Netzwerkfehler beim Streamen: ${err.message}`
+                : 'Netzwerkfehler beim Senden.',
+            createdAt: new Date().toLocaleTimeString('de-DE'),
+          });
+        }
+      }
     } finally {
       setSending(false);
+      setLiveStream(null);
       abortRef.current = null;
+    }
+  };
+
+  const handleSendSandboxErrorToAi = (execResult: SandboxExecutionResult) => {
+    const target = execResult.targetFile;
+    if (target && !pinnedFilePaths.includes(target)) {
+      setPinnedFilePaths((prev) => [...prev, target]);
+    }
+    const errText = [
+      `Der Sandbox-Befehl \`${execResult.displayCommand}\` ist fehlgeschlagen (Exit-Code ${execResult.exitCode ?? 'unbekannt'}, ${execResult.durationMs} ms).`,
+      execResult.error ? `Fehler: ${execResult.error}` : '',
+      execResult.stderr ? `stderr:\n\`\`\`\n${execResult.stderr.slice(0, 3000)}\n\`\`\`` : '',
+      execResult.stdout ? `stdout:\n\`\`\`\n${execResult.stdout.slice(0, 1500)}\n\`\`\`` : '',
+      'Analysiere die genaue Ursache in der angehefteten Datei und liefere den korrigierten Code (gerne als SEARCH/REPLACE-Patch oder vollständige Datei).',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    setCodingRole('bugfix');
+    if (isActiveWayConfirmed && !isMissingCloudTunnelUrl) {
+      void handleSendMessage(errText);
+    } else {
+      setPromptInput(errText);
     }
   };
 
@@ -2011,6 +2516,29 @@ export function CodingStudioView({
 
               <button
                 type="button"
+                data-testid="coding-toolbar-memory-btn"
+                onClick={() => {
+                  if (showRightDrawer && rightTab === 'gadgets') {
+                    setShowRightDrawer(false);
+                  } else {
+                    setRightTab('gadgets');
+                    setShowRightDrawer(true);
+                  }
+                }}
+                className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2.5 py-1 text-xs font-medium ${
+                  showRightDrawer && rightTab === 'gadgets'
+                    ? 'border-teal-200 bg-teal-50 text-teal-900'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <Brain className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="hidden sm:inline">
+                  Gedächtnis ({memoryStore.entries.filter((e) => e.enabled).length})
+                </span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => {
                   if (showRightDrawer && rightTab === 'connection') {
                     setShowRightDrawer(false);
@@ -2114,9 +2642,9 @@ export function CodingStudioView({
 
       {/* Main 3-Pane IDE Grid */}
       <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
-        {/* LEFT PANE: File & Folder Structure + Split Code Editor (hidden when maximized or toggled off) */}
+        {/* LEFT PANE: File & Folder Structure + Split CodeMirror Editor + Sandbox Runner */}
         {!chatMaximized && showExplorerPanel && (
-          <section className="flex w-72 shrink-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white xl:w-80">
+          <section className="flex w-80 shrink-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white xl:w-96">
             <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
               <div className="min-w-0">
                 <div className="truncate text-xs font-semibold text-slate-900">
@@ -2133,8 +2661,23 @@ export function CodingStudioView({
               <div className="flex shrink-0 items-center gap-1">
                 <button
                   type="button"
+                  onClick={() => setShowSandboxRunner((v) => !v)}
+                  title="Sandbox-Runner (Build/Test-Loop) ein-/ausblenden"
+                  aria-label="Sandbox-Runner umschalten"
+                  aria-expanded={showSandboxRunner}
+                  className={`rounded p-1 ${
+                    showSandboxRunner
+                      ? 'bg-teal-700 text-white'
+                      : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <Terminal className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
                   onClick={() => setShowNewFileInput((v) => !v)}
                   title="Neue Datei anlegen"
+                  aria-label="Neue Datei anlegen"
                   className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
                 >
                   <FilePlus2 className="h-3.5 w-3.5" aria-hidden="true" />
@@ -2144,6 +2687,7 @@ export function CodingStudioView({
                     type="button"
                     onClick={() => void loadServerWorkspace(serverSubDir)}
                     title="Ordner aktualisieren"
+                    aria-label="Ordner aktualisieren"
                     className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
                   >
                     <RefreshCw className={`h-3.5 w-3.5 ${treeLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
@@ -2219,7 +2763,17 @@ export function CodingStudioView({
             )}
 
             {/* Folder Tree or Empty State */}
-            <div className={`overflow-y-auto p-1.5 ${activeFile ? 'h-48 shrink-0 border-b border-slate-200' : 'flex-1'}`}>
+            <div
+              className={`overflow-y-auto p-1.5 ${
+                activeFile && showSandboxRunner
+                  ? 'h-24 shrink-0 border-b border-slate-200'
+                  : activeFile
+                    ? 'h-40 shrink-0 border-b border-slate-200'
+                    : showSandboxRunner
+                      ? 'min-h-0 flex-1 border-b border-slate-200'
+                      : 'flex-1'
+              }`}
+            >
               {workspaceMode === 'none' ? (
                 <div className="flex h-full flex-col items-center justify-center p-4 text-center">
                   <FolderTree className="h-8 w-8 text-slate-300" aria-hidden="true" />
@@ -2262,10 +2816,10 @@ export function CodingStudioView({
               )}
             </div>
 
-            {/* Split Code Viewer / Editor when a file is open */}
+            {/* Split CodeMirror 6 Editor + Live-Preview + Checkpoints */}
             {activeFile && (
-              <div className="flex min-h-0 flex-1 flex-col bg-slate-950 text-slate-100">
-                <div className="flex items-center justify-between gap-1.5 border-b border-slate-800 bg-slate-900 px-2.5 py-1.5">
+              <div className="flex min-h-[150px] flex-1 flex-col overflow-hidden bg-slate-950 text-slate-100">
+                <div className="flex shrink-0 items-center justify-between gap-1.5 border-b border-slate-800 bg-slate-900 px-2.5 py-1.5">
                   <div className="min-w-0">
                     <div className="truncate font-mono text-[11px] font-medium text-slate-100">
                       {activeFile.path}
@@ -2273,13 +2827,45 @@ export function CodingStudioView({
                     </div>
                     <div className="font-mono text-[10px] tabular-nums text-slate-400">
                       {activeFile.language} · {activeFile.content.split('\n').length} Zeilen
+                      {activeFileCheckpoints.length > 0
+                        ? ` · ${activeFileCheckpoints.length} Checkpoint${activeFileCheckpoints.length === 1 ? '' : 's'}`
+                        : ''}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
+                    {supportsLivePreview(activeFile.path, activeFile.language) && (
+                      <button
+                        type="button"
+                        data-testid="toggle-live-preview"
+                        onClick={() => setEditorPreviewMode((v) => !v)}
+                        title={editorPreviewMode ? 'Zurück zum Code-Editor' : 'Isolierte Live-Vorschau öffnen'}
+                        aria-label="Live-Vorschau umschalten"
+                        className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap shrink-0 ${
+                          editorPreviewMode
+                            ? 'bg-teal-600 text-white'
+                            : 'bg-slate-800 text-slate-200 hover:bg-slate-700 hover:text-white'
+                        }`}
+                      >
+                        <Eye className="h-3 w-3" aria-hidden="true" />
+                        <span>{editorPreviewMode ? 'Code' : 'Vorschau'}</span>
+                      </button>
+                    )}
+                    {activeFileCheckpoints.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => void handleRollbackCheckpoint(activeFile.path)}
+                        title={`Letzten Checkpoint (${activeFileCheckpoints[0].createdAt}) wiederherstellen`}
+                        aria-label="Checkpoint wiederherstellen"
+                        className="rounded p-1 text-amber-300 hover:bg-slate-800 hover:text-amber-200"
+                      >
+                        <History className="h-3 w-3" aria-hidden="true" />
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => void togglePinFile(activeFile.path)}
                       title="In Chat-Kontext anheften"
+                      aria-label="Datei anheften"
                       className={`rounded p-1 text-[10px] ${
                         pinnedFilePaths.includes(activeFile.path)
                           ? 'bg-teal-700 text-white'
@@ -2292,6 +2878,7 @@ export function CodingStudioView({
                       type="button"
                       onClick={() => void handleSaveActiveFile()}
                       title="In coding-workspace/ speichern"
+                      aria-label="Datei speichern"
                       className="rounded p-1 text-slate-300 hover:bg-slate-800 hover:text-white"
                     >
                       <Save className="h-3 w-3" aria-hidden="true" />
@@ -2300,6 +2887,7 @@ export function CodingStudioView({
                       type="button"
                       onClick={handleDownloadActiveFile}
                       title="Datei herunterladen"
+                      aria-label="Datei herunterladen"
                       className="rounded p-1 text-slate-300 hover:bg-slate-800 hover:text-white"
                     >
                       <Download className="h-3 w-3" aria-hidden="true" />
@@ -2308,6 +2896,7 @@ export function CodingStudioView({
                       type="button"
                       onClick={() => setActiveFilePath(null)}
                       title="Editor schließen"
+                      aria-label="Editor schließen"
                       className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
                     >
                       <X className="h-3 w-3" aria-hidden="true" />
@@ -2322,20 +2911,29 @@ export function CodingStudioView({
                 {fileLoading ? (
                   <div className="p-3 font-mono text-[11px] text-slate-400">Lade Datei…</div>
                 ) : (
-                  <textarea
+                  <CodingCodeEditor
+                    filePath={activeFile.path}
                     value={activeFile.content}
-                    onChange={(e) =>
+                    language={activeFile.language}
+                    previewMode={editorPreviewMode}
+                    onChange={(nextVal) =>
                       setFilesMap((prev) => ({
                         ...prev,
-                        [activeFile.path]: { ...activeFile, content: e.target.value, dirty: true },
+                        [activeFile.path]: { ...activeFile, content: nextVal, dirty: true },
                       }))
                     }
-                    spellCheck={false}
-                    aria-label={`Code-Editor für ${activeFile.path}`}
-                    className="min-h-0 flex-1 resize-none bg-slate-950 p-2.5 font-mono text-[11px] leading-relaxed text-slate-100 focus:outline-none"
                   />
                 )}
               </div>
+            )}
+
+            {/* Collapsible Sandbox Execution Runner (Human-in-the-Loop Build/Test Loop) */}
+            {showSandboxRunner && (
+              <CodingSandboxRunnerPanel
+                activeFilePath={activeFilePath}
+                sandboxFilePaths={sandboxFilePaths}
+                onSendErrorToAi={handleSendSandboxErrorToAi}
+              />
             )}
           </section>
         )}
@@ -2354,7 +2952,7 @@ export function CodingStudioView({
                 Projekt: {activeProject?.name}
               </span>
               <span className="font-mono text-[11px] text-slate-500">
-                Wissen: {activeKnowledgeCount} · Tools: {enabledTools.length}
+                Wissen: {activeKnowledgeCount} · Gedächtnis: {memoryStore.entries.filter((e) => e.enabled).length} · Tools: {enabledTools.length}
               </span>
               {pinnedFilePaths.length > 0 && (
                 <span className="font-mono text-[11px] font-medium text-teal-800">
@@ -2366,8 +2964,22 @@ export function CodingStudioView({
             <div className="flex shrink-0 items-center gap-1.5">
               <button
                 type="button"
+                onClick={() => setDiffModeEnabled((v) => !v)}
+                title="Instruiert die KI, kompakte SEARCH/REPLACE-Patches statt kompletter Dateien auszugeben"
+                aria-pressed={diffModeEnabled}
+                className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-[11px] font-medium whitespace-nowrap shrink-0 ${
+                  diffModeEnabled
+                    ? 'border-teal-600 bg-teal-50 text-teal-900'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                <GitCompareArrows className="h-3 w-3" aria-hidden="true" />
+                <span>Diff-Modus</span>
+              </button>
+              <button
+                type="button"
                 onClick={handleNewChat}
-                className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap shrink-0"
               >
                 <MessageSquarePlus className="h-3 w-3" aria-hidden="true" />
                 <span>Neuer Chat</span>
@@ -2542,7 +3154,7 @@ export function CodingStudioView({
           {/* Chat Message Feed */}
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
             {messages.length === 0 ? (
-              <div className="mx-auto max-w-2xl py-8">
+              <div className="mx-auto max-w-2xl py-2">
                 <h2 className="text-sm font-semibold text-slate-900">
                   Coding-Studio bereit
                 </h2>
@@ -2639,6 +3251,44 @@ export function CodingStudioView({
                               >
                                 <RefreshCw className="h-3 w-3" aria-hidden="true" />
                                 Weiter generieren
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => void handleRememberMessage(msg)}
+                              className="inline-flex items-center gap-1 text-slate-600 hover:text-teal-700"
+                              title="Dauerhaft im sitzungsübergreifenden Gedächtnis merken"
+                            >
+                              {rememberedMsgId === msg.id ? (
+                                <>
+                                  <Check className="h-3 w-3 text-emerald-600" aria-hidden="true" />
+                                  Gemerkt
+                                </>
+                              ) : (
+                                <>
+                                  <Brain className="h-3 w-3" aria-hidden="true" />
+                                  Merken
+                                </>
+                              )}
+                            </button>
+                            {speechTtsSupported && (
+                              <button
+                                type="button"
+                                onClick={() => handleToggleSpeakMessage(msg)}
+                                className="inline-flex items-center gap-1 text-slate-600 hover:text-teal-700"
+                                title="Antwort lokal im Browser vorlesen"
+                              >
+                                {speakingMsgId === msg.id ? (
+                                  <>
+                                    <VolumeX className="h-3 w-3 text-rose-600" aria-hidden="true" />
+                                    Stop
+                                  </>
+                                ) : (
+                                  <>
+                                    <Volume2 className="h-3 w-3" aria-hidden="true" />
+                                    Vorlesen
+                                  </>
+                                )}
                               </button>
                             )}
                             <button
@@ -2816,6 +3466,9 @@ export function CodingStudioView({
                       <ChatMarkdownMessage
                         content={msg.content}
                         onApplyCode={(code, lang, suggestedPath) => void handleApplyCodeBlock(code, lang, suggestedPath)}
+                        onPreviewDiff={(code, lang, suggestedPath, isPatch) =>
+                          void handlePreviewDiff(code, lang, suggestedPath, isPatch)
+                        }
                         applyCodeLabel="In coding-workspace/ speichern"
                       />
                     )}
@@ -2863,9 +3516,47 @@ export function CodingStudioView({
             )}
 
             {sending && (
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-3 text-xs text-slate-600">
-                Generiere Antwort ({activeTargetLabel} · {activeDisplayModel} · Thinking: {thinkingMode})…
-              </div>
+              <article
+                data-testid="live-stream-card"
+                className="space-y-2 rounded-lg border border-teal-200 bg-white px-3.5 py-3 shadow-xs"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
+                  <span className="font-medium text-teal-800">
+                    {liveStream?.status ||
+                      `Generiere Antwort (${activeTargetLabel} · ${activeDisplayModel})…`}
+                  </span>
+                  <span className="font-mono text-[10px] text-slate-500 tabular-nums">
+                    {activeDisplayModel} · Streaming aktiv
+                  </span>
+                </div>
+
+                {liveStream && liveStream.toolEvents.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-slate-600">
+                    {liveStream.toolEvents.map((te) => (
+                      <span key={te.id}>
+                        Tool: {te.tool} ({te.ok ? 'OK' : 'Fehler'})
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {liveStream?.thinking && (
+                  <details open className="rounded border border-slate-200 bg-slate-50 p-2">
+                    <summary className="cursor-pointer font-mono text-[10px] font-medium text-slate-600">
+                      Gedankengang (Live · {liveStream.thinking.length} Zeichen)
+                    </summary>
+                    <pre className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-slate-600">
+                      {liveStream.thinking}
+                    </pre>
+                  </details>
+                )}
+
+                {liveStream?.content ? (
+                  <ChatMarkdownMessage content={liveStream.content} />
+                ) : (
+                  <div className="text-xs text-slate-500">Warte auf erste Tokens…</div>
+                )}
+              </article>
             )}
             <div ref={chatBottomRef} />
           </div>
@@ -2936,6 +3627,25 @@ export function CodingStudioView({
                 >
                   <Sparkles className="h-4 w-4" aria-hidden="true" />
                 </button>
+                {speechSttSupported && (
+                  <button
+                    type="button"
+                    onClick={handleToggleDictation}
+                    title={dictating ? 'Spracheingabe stoppen' : 'Lokal per Mikrofon diktieren (Browser Speech-API)'}
+                    aria-label="Spracheingabe umschalten"
+                    className={`rounded-md border p-2 ${
+                      dictating
+                        ? 'border-rose-500 bg-rose-50 text-rose-700'
+                        : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-100 hover:text-teal-700'
+                    }`}
+                  >
+                    {dictating ? (
+                      <MicOff className="h-4 w-4" aria-hidden="true" />
+                    ) : (
+                      <Mic className="h-4 w-4" aria-hidden="true" />
+                    )}
+                  </button>
+                )}
               </div>
 
               <textarea
@@ -2995,15 +3705,15 @@ export function CodingStudioView({
           </div>
         </section>
 
-        {/* RIGHT PANE: 3-Tab Drawer (Verbindung, Tools & Thinking, Notebooks & Wissen) */}
+        {/* RIGHT PANE: 4-Tab Drawer (Verbindung, Tools, Notebooks, Gedächtnis & Gadgets) */}
         {!chatMaximized && showRightDrawer && (
           <aside className="flex w-80 shrink-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
             {/* Segmented Drawer Tabs */}
-            <div className="grid grid-cols-3 border-b border-slate-200 bg-slate-50 p-1 text-[11px]">
+            <div className="grid grid-cols-4 border-b border-slate-200 bg-slate-50 p-1 text-[10px]">
               <button
                 type="button"
                 onClick={() => setRightTab('connection')}
-                className={`rounded px-1.5 py-1.5 font-medium ${
+                className={`rounded px-1 py-1.5 font-medium truncate ${
                   rightTab === 'connection'
                     ? 'bg-white text-slate-900 shadow-2xs'
                     : 'text-slate-600 hover:text-slate-900'
@@ -3014,18 +3724,18 @@ export function CodingStudioView({
               <button
                 type="button"
                 onClick={() => setRightTab('tools')}
-                className={`rounded px-1.5 py-1.5 font-medium ${
+                className={`rounded px-1 py-1.5 font-medium truncate ${
                   rightTab === 'tools'
                     ? 'bg-white text-slate-900 shadow-2xs'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                Tools & Denk
+                Tools
               </button>
               <button
                 type="button"
                 onClick={() => setRightTab('notebooks')}
-                className={`rounded px-1.5 py-1.5 font-medium ${
+                className={`rounded px-1 py-1.5 font-medium truncate ${
                   rightTab === 'notebooks'
                     ? 'bg-white text-slate-900 shadow-2xs'
                     : 'text-slate-600 hover:text-slate-900'
@@ -3033,9 +3743,67 @@ export function CodingStudioView({
               >
                 Notebooks
               </button>
+              <button
+                type="button"
+                data-testid="right-tab-gadgets"
+                onClick={() => setRightTab('gadgets')}
+                className={`rounded px-1 py-1.5 font-medium truncate ${
+                  rightTab === 'gadgets'
+                    ? 'bg-white text-slate-900 shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Gedächtnis
+              </button>
             </div>
 
-            {rightTab !== 'notebooks' ? (
+            {rightTab === 'gadgets' ? (
+              <div className="flex-1 overflow-y-auto p-3">
+                <CodingGadgetsPanel
+                  memoryStore={memoryStore}
+                  budget={estimateContextTokenBudget({
+                    systemText: `${CODING_ROLE_PROMPTS[codingRole].prompt}\n${customSystemPrompt}`,
+                    memoryText: compileMemorySystemBlock(memoryStore, 4000).block,
+                    pinnedFilesText: pinnedFilePaths.map((p) => filesMap[p]?.content || '').join('\n'),
+                    historyTexts: (activeChat?.messages || []).map((m) => m.content),
+                    contextWindow:
+                      activeWay === 'free_uncensored_api'
+                        ? activeFreePreset.contextWindow || 65_536
+                        : activeWay === 'cloud_tunnel'
+                          ? tunnelNumCtx
+                          : 32_768,
+                  })}
+                  activeFilePath={activeFilePath}
+                  speechSttSupported={speechSttSupported}
+                  speechTtsSupported={speechTtsSupported}
+                  onSaveEntry={handleSaveMemoryEntry}
+                  onToggleAutoInject={(next) =>
+                    handleUpdateMemoryStore({
+                      ...memoryStore,
+                      autoInject: next,
+                      updatedAt: new Date().toISOString(),
+                    })
+                  }
+                  onToggleEntry={(id) =>
+                    handleUpdateMemoryStore({
+                      ...memoryStore,
+                      entries: memoryStore.entries.map((e) =>
+                        e.id === id ? { ...e, enabled: !e.enabled, updatedAt: new Date().toISOString() } : e
+                      ),
+                      updatedAt: new Date().toISOString(),
+                    })
+                  }
+                  onDeleteEntry={handleDeleteMemoryEntry}
+                  onImportStore={handleImportMemoryStore}
+                  onInsertQuickPrompt={(text) => setPromptInput(text)}
+                  onSelectNoTrackApi={() => {
+                    setActiveWay('free_uncensored_api');
+                    handleSelectFreeApiPreset('notrack-ai');
+                    setRightTab('connection');
+                  }}
+                />
+              </div>
+            ) : rightTab !== 'notebooks' ? (
               <CodingConnectionSettings
                 drawerSubTab={rightTab === 'tools' ? 'tools' : 'connection'}
                 activeWay={activeWay}
@@ -3453,6 +4221,15 @@ export function CodingStudioView({
           </aside>
         )}
       </div>
+
+      {pendingDiffReview && (
+        <CodingDiffModal
+          review={pendingDiffReview}
+          applying={applyingDiff}
+          onConfirm={() => void handleConfirmPendingDiff()}
+          onCancel={() => setPendingDiffReview(null)}
+        />
+      )}
     </div>
   );
 }

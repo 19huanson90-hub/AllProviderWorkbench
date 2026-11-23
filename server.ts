@@ -17,12 +17,27 @@ import {
 } from './src/lib/chatEngine.ts';
 import { buildInitialTestResults, classifyAllProviders } from './src/lib/classifier.ts';
 import {
+  compileMemorySystemBlock,
+  createDefaultMemoryStore,
+  upsertMemoryEntry,
+  validateMemoryStorePayload,
+  type CodingMemoryCategory,
+  type CodingMemoryStore,
+} from './src/lib/codingMemory.ts';
+import {
   fetchAiHordeModels,
   runAiHordeChat,
   runHfSpaceChat,
   runOpenAiCompatibleCodingChat,
   validateCloudTunnelUrl,
+  type UnifiedCodingReply,
 } from './src/lib/codingProviders.ts';
+import {
+  runSafeSandboxCommand,
+  SANDBOX_RUNNER_PRESETS,
+  type SandboxRunnerPresetId,
+} from './src/lib/codingSandboxRunner.ts';
+import { formatSseFrame, type CodingStreamEvent } from './src/lib/codingStream.ts';
 import {
   CODING_TOOL_DEFINITIONS,
   FREE_UNCENSORED_API_PRESETS,
@@ -109,6 +124,31 @@ function saveNotebooksToDisk(workspace: NotebooksWorkspace): void {
   }
   fs.writeFileSync(tmpPath, JSON.stringify(workspace, null, 2), 'utf8');
   fs.renameSync(tmpPath, NOTEBOOKS_FILE_PATH);
+}
+
+const CODING_MEMORY_FILE_PATH = path.resolve(NOTEBOOKS_DATA_DIR, 'coding-memory.json');
+
+function loadCodingMemoryFromDisk(): CodingMemoryStore {
+  try {
+    if (fs.existsSync(CODING_MEMORY_FILE_PATH)) {
+      const raw = JSON.parse(fs.readFileSync(CODING_MEMORY_FILE_PATH, 'utf8'));
+      const validated = validateMemoryStorePayload(raw);
+      if (validated.ok) return validated.store;
+    }
+  } catch (err) {
+    console.warn('Could not load data/coding-memory.json, initializing fresh memory store:', err);
+  }
+  return createDefaultMemoryStore();
+}
+
+function saveCodingMemoryToDisk(store: CodingMemoryStore): void {
+  fs.mkdirSync(NOTEBOOKS_DATA_DIR, { recursive: true });
+  const tmpPath = path.resolve(NOTEBOOKS_DATA_DIR, `coding-memory.${process.pid}.tmp.json`);
+  if (!tmpPath.startsWith(NOTEBOOKS_DATA_DIR + path.sep)) {
+    throw new Error('Ungültiger Memory-Speicherpfad.');
+  }
+  fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2), 'utf8');
+  fs.renameSync(tmpPath, CODING_MEMORY_FILE_PATH);
 }
 
 interface ServerState {
@@ -1298,6 +1338,7 @@ async function startServer() {
   // Local Projects / Notebooks, Knowledge Base & Chrono-Jobs (strictly local)
   // =========================================================================
   let notebooksWorkspace: NotebooksWorkspace = loadNotebooksFromDisk();
+  let codingMemoryStore: CodingMemoryStore = loadCodingMemoryFromDisk();
   const runningChronoJobs = new Set<string>();
 
   async function executeChronoJob(
@@ -1704,53 +1745,53 @@ async function startServer() {
     }
   });
 
-  app.post('/api/coding/chat', async (req, res) => {
-    const body = req.body as {
-      way?: CodingMainWay;
-      warningAcknowledged?: boolean;
-      activeProjectId?: string;
-      enabledTools?: string[];
-      messages?: unknown;
-      systemPrompt?: string;
-      images?: unknown;
-      thinkingMode?: ThinkingMode;
-      temperature?: number;
-      maxTokens?: number;
-      topP?: number;
-      topK?: number;
-      repetitionPenalty?: number;
-      presencePenalty?: number;
-      frequencyPenalty?: number;
-      seed?: number;
-      // Weg 1: HF Space
-      hfSpaceId?: string;
-      hfToken?: string;
-      gpuDuration?: number;
-      useDflash?: boolean;
-      // Weg 2: AI Horde
-      hordeModel?: string;
-      hordeApiKey?: string;
-      hordeMaxLength?: number;
-      hordeMaxContextLength?: number;
-      hordeRepPen?: number;
-      hordeTrustedWorkers?: boolean;
-      hordeSlowWorkers?: boolean;
-      hordeAllowDowngrade?: boolean;
-      // Weg 3: Free Uncensored API
-      freeApiPresetId?: string;
-      // Weg 4: Cloud-GPU Tunnel
-      tunnelUrl?: string;
-      numCtx?: number;
-      // Weg 3/4/5 common or fallback
-      model?: string;
-      apiKey?: string;
-      targetType?: ChatTargetType;
-      bridgeId?: string;
-      providerId?: string;
-      endpointUrl?: string;
-      allowManualOverride?: boolean;
-    };
+  interface CodingChatRequestBody {
+    way?: CodingMainWay;
+    warningAcknowledged?: boolean;
+    activeProjectId?: string;
+    enabledTools?: string[];
+    usePersistentMemory?: boolean;
+    messages?: unknown;
+    systemPrompt?: string;
+    images?: unknown;
+    thinkingMode?: ThinkingMode;
+    temperature?: number;
+    maxTokens?: number;
+    topP?: number;
+    topK?: number;
+    repetitionPenalty?: number;
+    presencePenalty?: number;
+    frequencyPenalty?: number;
+    seed?: number;
+    hfSpaceId?: string;
+    hfToken?: string;
+    gpuDuration?: number;
+    useDflash?: boolean;
+    hordeModel?: string;
+    hordeApiKey?: string;
+    hordeMaxLength?: number;
+    hordeMaxContextLength?: number;
+    hordeRepPen?: number;
+    hordeTrustedWorkers?: boolean;
+    hordeSlowWorkers?: boolean;
+    hordeAllowDowngrade?: boolean;
+    hordeAutoContinue?: boolean;
+    freeApiPresetId?: string;
+    tunnelUrl?: string;
+    numCtx?: number;
+    model?: string;
+    apiKey?: string;
+    targetType?: ChatTargetType;
+    bridgeId?: string;
+    providerId?: string;
+    endpointUrl?: string;
+    allowManualOverride?: boolean;
+  }
 
+  async function executeUnifiedCodingChat(
+    body: CodingChatRequestBody,
+    streamOpts?: { onStream?: (ev: CodingStreamEvent) => void; signal?: AbortSignal }
+  ): Promise<{ status: number; payload: UnifiedCodingReply }> {
     const way: CodingMainWay =
       body.way === 'hf_space' ||
       body.way === 'ai_horde' ||
@@ -1761,12 +1802,15 @@ async function startServer() {
         : 'hf_space';
 
     if (way !== 'catalog_or_bridge' && body.warningAcknowledged !== true) {
-      res.status(400).json({
-        ok: false,
-        error:
-          'Bitte zuerst den Warnhinweis für diese Verbindung im Coding-Studio bestätigen (Checkbox aktivieren).',
-      });
-      return;
+      return {
+        status: 400,
+        payload: {
+          ok: false,
+          latencyMs: 0,
+          error:
+            'Bitte zuerst den Warnhinweis für diese Verbindung im Coding-Studio bestätigen (Checkbox aktivieren).',
+        },
+      };
     }
 
     const allowedToolIds = new Set<string>(CODING_TOOL_DEFINITIONS.map((t) => t.id));
@@ -1781,24 +1825,51 @@ async function startServer() {
         ? notebooksWorkspace.projects.find((p) => p.id === body.activeProjectId) || null
         : notebooksWorkspace.projects[0] || null;
 
+    let memoryMutated = false;
     const toolCtx =
       enabledTools.size > 0
         ? {
             rootDir: __dirname,
             activeProject,
             enabledTools,
+            memoryStore: codingMemoryStore,
+            onMemoryMutated: (nextStore: CodingMemoryStore) => {
+              codingMemoryStore = nextStore;
+              memoryMutated = true;
+              try {
+                saveCodingMemoryToDisk(codingMemoryStore);
+              } catch (err) {
+                console.warn('Failed to persist coding memory after tool mutation:', err);
+              }
+            },
           }
         : undefined;
 
     const thinkingMode: ThinkingMode =
       body.thinkingMode === 'off' || body.thinkingMode === 'deep' ? body.thinkingMode : 'standard';
-    const systemPrompt = typeof body.systemPrompt === 'string' ? body.systemPrompt.slice(0, 31500) : '';
+    const rawSystemPrompt = typeof body.systemPrompt === 'string' ? body.systemPrompt.slice(0, 27500) : '';
+    const memoryCompilation =
+      body.usePersistentMemory !== false
+        ? compileMemorySystemBlock(codingMemoryStore, 4000)
+        : { block: '', activeCount: 0 };
+    const systemPrompt = [rawSystemPrompt, memoryCompilation.block].filter(Boolean).join('\n\n').slice(0, 31500);
     const temperature =
       typeof body.temperature === 'number' && Number.isFinite(body.temperature) ? body.temperature : 0.25;
     const maxTokens =
-      typeof body.maxTokens === 'number' && Number.isFinite(body.maxTokens) ? body.maxTokens : 2048;
+      typeof body.maxTokens === 'number' && Number.isFinite(body.maxTokens) ? body.maxTokens : 4096;
 
-    // Extract first safe raster image if attached (for HF Vision Space)
+    const attachMemoryMeta = (reply: UnifiedCodingReply): UnifiedCodingReply => {
+      if (!memoryMutated && memoryCompilation.activeCount === 0) return reply;
+      return {
+        ...reply,
+        meta: {
+          ...(reply.meta || {}),
+          memoryUpdated: memoryMutated,
+          memoryInjectedCount: memoryCompilation.activeCount,
+        },
+      };
+    };
+
     const firstSafeImage =
       Array.isArray(body.images)
         ? body.images.find(
@@ -1810,8 +1881,7 @@ async function startServer() {
     if (way === 'hf_space') {
       const sanitizedNoSys = sanitizeChatMessages(body.messages, undefined, undefined);
       if (sanitizedNoSys.length === 0 || !sanitizedNoSys.some((m) => m.role === 'user')) {
-        res.status(400).json({ ok: false, error: 'Bitte eine Nachricht eingeben.' });
-        return;
+        return { status: 400, payload: { ok: false, latencyMs: 0, error: 'Bitte eine Nachricht eingeben.' } };
       }
       const result = await runHfSpaceChat({
         spaceId: typeof body.hfSpaceId === 'string' && body.hfSpaceId ? body.hfSpaceId : HF_SPACE_PRESETS[0].id,
@@ -1832,16 +1902,16 @@ async function startServer() {
         useDflash: body.useDflash !== false,
         imageBase64: firstSafeImage,
         toolCtx,
+        onStream: streamOpts?.onStream,
+        signal: streamOpts?.signal,
       });
-      res.json(result);
-      return;
+      return { status: 200, payload: attachMemoryMeta(result) };
     }
 
     if (way === 'ai_horde') {
       const sanitizedNoSys = sanitizeChatMessages(body.messages, undefined, undefined);
       if (sanitizedNoSys.length === 0 || !sanitizedNoSys.some((m) => m.role === 'user')) {
-        res.status(400).json({ ok: false, error: 'Bitte eine Nachricht eingeben.' });
-        return;
+        return { status: 400, payload: { ok: false, latencyMs: 0, error: 'Bitte eine Nachricht eingeben.' } };
       }
       const result = await runAiHordeChat({
         model: typeof body.hordeModel === 'string' ? body.hordeModel : '',
@@ -1866,17 +1936,17 @@ async function startServer() {
         trustedWorkers: body.hordeTrustedWorkers === true,
         slowWorkers: body.hordeSlowWorkers !== false,
         allowDowngrade: body.hordeAllowDowngrade !== false,
-        autoContinue: (body as { hordeAutoContinue?: boolean }).hordeAutoContinue !== false,
+        autoContinue: body.hordeAutoContinue !== false,
         toolCtx,
+        onStream: streamOpts?.onStream,
+        signal: streamOpts?.signal,
       });
-      res.json(result);
-      return;
+      return { status: 200, payload: attachMemoryMeta(result) };
     }
 
     const sanitizedMessages = sanitizeChatMessages(body.messages, systemPrompt, body.images);
     if (sanitizedMessages.length === 0 || !sanitizedMessages.some((m) => m.role === 'user')) {
-      res.status(400).json({ ok: false, error: 'Bitte eine Nachricht eingeben.' });
-      return;
+      return { status: 400, payload: { ok: false, latencyMs: 0, error: 'Bitte eine Nachricht eingeben.' } };
     }
 
     if (way === 'free_uncensored_api') {
@@ -1884,11 +1954,14 @@ async function startServer() {
         FREE_UNCENSORED_API_PRESETS.find((p) => p.id === body.freeApiPresetId) ||
         FREE_UNCENSORED_API_PRESETS[0];
       if (preset.needsKey && !(typeof body.apiKey === 'string' && body.apiKey.trim())) {
-        res.status(400).json({
-          ok: false,
-          error: `${preset.label} erfordert einen kostenlosen Session-API-Key. Klicke rechts auf „API-Key holen“ oder wähle OVHcloud/Pollinations (Ohne Key).`,
-        });
-        return;
+        return {
+          status: 400,
+          payload: {
+            ok: false,
+            latencyMs: 0,
+            error: `${preset.label} erfordert einen Session-API-Key. Klicke rechts auf „API-Key holen“ oder wähle OVHcloud/Pollinations (Ohne Key).`,
+          },
+        };
       }
       const result = await runOpenAiCompatibleCodingChat({
         baseUrl: preset.baseUrl,
@@ -1903,16 +1976,16 @@ async function startServer() {
         frequencyPenalty: typeof body.frequencyPenalty === 'number' ? body.frequencyPenalty : undefined,
         seed: typeof body.seed === 'number' ? body.seed : undefined,
         toolCtx,
+        onStream: streamOpts?.onStream,
+        signal: streamOpts?.signal,
       });
-      res.json(result);
-      return;
+      return { status: 200, payload: attachMemoryMeta(result) };
     }
 
     if (way === 'cloud_tunnel') {
       const checked = validateCloudTunnelUrl(typeof body.tunnelUrl === 'string' ? body.tunnelUrl : '');
       if (!checked.ok) {
-        res.status(400).json({ ok: false, error: checked.error });
-        return;
+        return { status: 400, payload: { ok: false, latencyMs: 0, error: checked.error } };
       }
       const result = await runOpenAiCompatibleCodingChat({
         baseUrl: checked.baseUrl,
@@ -1926,12 +1999,12 @@ async function startServer() {
         seed: typeof body.seed === 'number' ? body.seed : undefined,
         numCtx: typeof body.numCtx === 'number' ? body.numCtx : undefined,
         toolCtx,
+        onStream: streamOpts?.onStream,
+        signal: streamOpts?.signal,
       });
-      res.json(result);
-      return;
+      return { status: 200, payload: attachMemoryMeta(result) };
     }
 
-    // Secondary Fallback: catalog_or_bridge (all 368 catalog providers, 7 ROT bridges, LiteLLM, Local 127.0.0.1)
     const resolved = validateChatTarget({
       targetType: body.targetType || 'provider',
       bridgeId: body.bridgeId,
@@ -1942,8 +2015,7 @@ async function startServer() {
       bridgeSelections: state.bridgeSelections,
     });
     if (!resolved.ok) {
-      res.status(403).json({ ok: false, error: resolved.error });
-      return;
+      return { status: 403, payload: { ok: false, latencyMs: 0, error: resolved.error } };
     }
     const effectiveKey =
       (typeof body.apiKey === 'string' && body.apiKey.trim()) ||
@@ -1959,6 +2031,183 @@ async function startServer() {
       topP: typeof body.topP === 'number' ? body.topP : undefined,
       maxTokens,
       toolCtx,
+      onStream: streamOpts?.onStream,
+      signal: streamOpts?.signal,
+    });
+    return { status: 200, payload: attachMemoryMeta(result) };
+  }
+
+  // Persistent Long-Term Memory ("Merkender Verlauf") REST endpoints (strictly local, secrets auto-redacted)
+  app.get('/api/coding/memory', (_req, res) => {
+    res.json({ ok: true, store: codingMemoryStore });
+  });
+
+  app.put('/api/coding/memory', (req, res) => {
+    const validated = validateMemoryStorePayload(req.body);
+    if (!validated.ok) {
+      res.status(400).json({ ok: false, error: validated.error });
+      return;
+    }
+    codingMemoryStore = validated.store;
+    try {
+      saveCodingMemoryToDisk(codingMemoryStore);
+      res.json({ ok: true, store: codingMemoryStore });
+    } catch (err: unknown) {
+      res.status(500).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Fehler beim Speichern des Gedächtnisses.',
+      });
+    }
+  });
+
+  app.post('/api/coding/memory/entry', (req, res) => {
+    const body = (req.body || {}) as {
+      id?: string;
+      title?: string;
+      content?: string;
+      category?: CodingMemoryCategory;
+      source?: 'user' | 'assistant' | 'tool';
+      enabled?: boolean;
+    };
+    const title = typeof body.title === 'string' ? body.title.trim() : '';
+    const content = typeof body.content === 'string' ? body.content.trim() : '';
+    if (!title || !content) {
+      res.status(400).json({ ok: false, error: 'Titel und Inhalt sind erforderlich.' });
+      return;
+    }
+    const updated = upsertMemoryEntry(codingMemoryStore, {
+      id: typeof body.id === 'string' ? body.id : undefined,
+      title,
+      content,
+      category: body.category,
+      source: body.source === 'assistant' || body.source === 'tool' ? body.source : 'user',
+      enabled: typeof body.enabled === 'boolean' ? body.enabled : true,
+    });
+    codingMemoryStore = updated.store;
+    try {
+      saveCodingMemoryToDisk(codingMemoryStore);
+      res.json({ ok: true, entry: updated.entry, redacted: updated.redacted, store: codingMemoryStore });
+    } catch (err: unknown) {
+      res.status(500).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Fehler beim Speichern.',
+      });
+    }
+  });
+
+  app.delete('/api/coding/memory/entry/:id', (req, res) => {
+    const entryId = String(req.params.id || '').trim();
+    const before = codingMemoryStore.entries.length;
+    codingMemoryStore = {
+      ...codingMemoryStore,
+      entries: codingMemoryStore.entries.filter((e) => e.id !== entryId),
+      updatedAt: new Date().toISOString(),
+    };
+    if (codingMemoryStore.entries.length !== before) {
+      try {
+        saveCodingMemoryToDisk(codingMemoryStore);
+      } catch (err: unknown) {
+        res.status(500).json({
+          ok: false,
+          error: err instanceof Error ? err.message : 'Fehler beim Löschen.',
+        });
+        return;
+      }
+    }
+    res.json({ ok: true, store: codingMemoryStore });
+  });
+
+  app.post('/api/coding/chat', async (req, res) => {
+    const out = await executeUnifiedCodingChat((req.body || {}) as CodingChatRequestBody);
+    res.status(out.status).json(out.payload);
+  });
+
+  // Real-time Server-Sent Events (SSE) Streaming endpoint for Coding Studio
+  app.post('/api/coding/chat/stream', async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const abortCtrl = new AbortController();
+    let closed = false;
+    req.on('close', () => {
+      closed = true;
+      abortCtrl.abort();
+    });
+
+    const sendEvent = (ev: CodingStreamEvent) => {
+      if (closed || res.writableEnded) return;
+      try {
+        res.write(formatSseFrame(ev));
+      } catch {
+        closed = true;
+      }
+    };
+
+    try {
+      const out = await executeUnifiedCodingChat((req.body || {}) as CodingChatRequestBody, {
+        onStream: sendEvent,
+        signal: abortCtrl.signal,
+      });
+      if (!closed) {
+        if (out.payload.ok) {
+          sendEvent({ type: 'done', payload: out.payload });
+        } else {
+          sendEvent({
+            type: 'error',
+            error: out.payload.error || `HTTP ${out.status}`,
+            httpStatus: out.payload.httpStatus || out.status,
+            targetUrl: out.payload.targetUrl,
+            rawPreview: out.payload.rawPreview,
+            latencyMs: out.payload.latencyMs,
+            toolEvents: out.payload.toolEvents,
+          });
+        }
+      }
+    } catch (err: unknown) {
+      if (!closed) {
+        sendEvent({
+          type: 'error',
+          error: err instanceof Error ? err.message : 'Stream-Ausführung fehlgeschlagen.',
+        });
+      }
+    } finally {
+      if (!res.writableEnded) {
+        res.end();
+      }
+    }
+  });
+
+  // Hardened Sandbox Execution Runner (allowlisted presets, coding-workspace/ confinement, human-in-the-loop approval)
+  app.get('/api/coding/sandbox/presets', (_req, res) => {
+    res.json({ ok: true, presets: SANDBOX_RUNNER_PRESETS });
+  });
+
+  app.post('/api/coding/sandbox/run', async (req, res) => {
+    const body = (req.body || {}) as {
+      presetId?: string;
+      targetFile?: string;
+      confirmExecution?: boolean;
+    };
+    const presetValid = SANDBOX_RUNNER_PRESETS.some((p) => p.id === body.presetId);
+    if (!presetValid) {
+      res.status(400).json({ ok: false, error: 'Ungültiges Sandbox-Ausführungs-Preset.' });
+      return;
+    }
+    if (body.confirmExecution !== true) {
+      res.status(403).json({
+        ok: false,
+        error: 'Ausführung erfordert eine explizite Nutzer-Freigabe (confirmExecution: true).',
+      });
+      return;
+    }
+    const result = await runSafeSandboxCommand({
+      rootDir: __dirname,
+      presetId: body.presetId as SandboxRunnerPresetId,
+      targetFile: typeof body.targetFile === 'string' ? body.targetFile : '',
+      confirmExecution: true,
     });
     res.json(result);
   });

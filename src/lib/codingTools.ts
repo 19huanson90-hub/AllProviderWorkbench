@@ -10,6 +10,13 @@ import {
   writeSafeCodingSandboxFile,
 } from './codingWorkspace.ts';
 import {
+  extractCodeOutline,
+  searchMemoryEntries,
+  upsertMemoryEntry,
+  type CodingMemoryCategory,
+  type CodingMemoryStore,
+} from './codingMemory.ts';
+import {
   createId,
   searchProjectEverything,
   type NotebookProject,
@@ -19,12 +26,15 @@ export interface ToolExecutionContext {
   rootDir: string;
   activeProject?: NotebookProject | null;
   enabledTools: ReadonlySet<CodingToolId>;
+  memoryStore?: CodingMemoryStore | null;
+  onMemoryMutated?: (nextStore: CodingMemoryStore) => void;
 }
 
 export interface ToolExecutionResult {
   event: CodingToolEvent;
   outputText: string;
   writtenFilePath?: string;
+  memoryUpdated?: boolean;
 }
 
 /**
@@ -103,6 +113,53 @@ export function buildOpenAiToolSchemas(enabledTools: ReadonlySet<CodingToolId>):
         },
       },
     },
+    inspect_code_outline: {
+      type: 'function',
+      function: {
+        name: 'inspect_code_outline',
+        description: 'Extrahiert kompakt alle Funktionen, Klassen, Interfaces, Typen & HTTP-Routen mit Zeilennummern aus einer Projektdatei.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Relativer Dateipfad, z. B. "server.ts" oder "src/App.tsx".' },
+          },
+          required: ['path'],
+        },
+      },
+    },
+    remember_fact: {
+      type: 'function',
+      function: {
+        name: 'remember_fact',
+        description: 'Speichert einen wichtigen Fakt, eine Präferenz oder Architekturentscheidung dauerhaft im Langzeit-Gedächtnis (ohne API-Keys/Secrets).',
+        parameters: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Kurzer prägnanter Titel (max. 140 Zeichen).' },
+            content: { type: 'string', description: 'Zu merkender Inhalt / Fakt / Entscheidung.' },
+            category: {
+              type: 'string',
+              enum: ['fact', 'preference', 'decision', 'snippet', 'todo'],
+              description: 'Kategorie des Gedächtnis-Eintrags.',
+            },
+          },
+          required: ['title', 'content'],
+        },
+      },
+    },
+    recall_memory: {
+      type: 'function',
+      function: {
+        name: 'recall_memory',
+        description: 'Durchsucht das dauerhafte Langzeit-Gedächtnis (merkender Verlauf über alle Sitzungen).',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Suchbegriff oder leeres Feld für alle aktiven Einträge.' },
+          },
+        },
+      },
+    },
   };
 
   const out: Array<Record<string, unknown>> = [];
@@ -116,7 +173,7 @@ const CASUAL_SHORT_PROMPT_RE =
   /^(hi+|hey+|hallo+|moin|servus|tach|yo+|jo+|ok(ay)?|ja+|nein|nee|nö|danke|thx|thanks|bitte|cool|super|gut|alles klar|wie geht'?s\??|was geht\??|test|ping|i|a|hm+|aha|alles gut)[!.?\s]*$/i;
 
 const TOOL_INTENT_HINT_RE =
-  /(datei|file|ordner|folder|projekt|project|code|src\/|coding-workspace|lies|read|such|search|schreib|write|erstell|speicher|notebook|wissen|bug|fehler|test|refact|class|function|import|export|package\.json|\.[a-z]{1,4}\b)/i;
+  /(datei|file|ordner|folder|projekt|project|code|src\/|coding-workspace|lies|read|such|search|schreib|write|erstell|speicher|notebook|wissen|merk|gedächtnis|memory|erinner|outline|struktur|bug|fehler|test|refact|class|function|import|export|package\.json|\.[a-z]{1,4}\b)/i;
 
 /**
  * Returns false for short casual greetings/acknowledgements ("hi", "jo", "ok", "i", etc.)
@@ -157,6 +214,15 @@ export function buildReActToolPrompt(enabledTools: ReadonlySet<CodingToolId>): s
   }
   if (enabledTools.has('search_notebook_knowledge')) {
     lines.push('- search_notebook_knowledge(query: string): Durchsucht Notebook-Wissen & Chats.');
+  }
+  if (enabledTools.has('inspect_code_outline')) {
+    lines.push('- inspect_code_outline(path: string): Zeigt Funktionen/Klassen/Routen einer Datei mit Zeilennummern.');
+  }
+  if (enabledTools.has('remember_fact')) {
+    lines.push('- remember_fact(title: string, content: string, category?: "fact"|"preference"|"decision"|"snippet"|"todo"): Merkt sich einen Fakt dauerhaft.');
+  }
+  if (enabledTools.has('recall_memory')) {
+    lines.push('- recall_memory(query?: string): Ruft dauerhaft gemerkte Fakten ab.');
   }
   lines.push('Antworte bei normalen Fragen direkt OHNE <tool_call>.');
   return lines.join('\n');
@@ -370,6 +436,103 @@ export function executeCodingTool(
         args,
         ok: true,
         summary: `${hits.length} Notebook-Treffer für "${query}"`,
+        resultPreview: out.slice(0, 600),
+      },
+      outputText: out,
+    };
+  }
+
+  if (validTool === 'inspect_code_outline') {
+    const filePath = typeof args.path === 'string' ? args.path : '';
+    const res = readSafeWorkspaceFile(ctx.rootDir, filePath);
+    if (!res.ok) {
+      return {
+        event: { id, tool: validTool, args, ok: false, summary: res.error, resultPreview: res.error },
+        outputText: `Fehler: ${res.error}`,
+      };
+    }
+    const outline = extractCodeOutline(res.content, res.language);
+    const out =
+      outline.length === 0
+        ? `Keine Symbole in ${res.path} gefunden (${res.content.split('\n').length} Zeilen).`
+        : outline.map((s) => `L${s.line} [${s.kind}] ${s.name} — ${s.signature}`).join('\n');
+    return {
+      event: {
+        id,
+        tool: validTool,
+        args,
+        ok: true,
+        summary: `${outline.length} Symbole in ${res.path}`,
+        resultPreview: out.slice(0, 600),
+      },
+      outputText: `Code-Outline für ${res.path} (${outline.length} Symbole):\n${out}`,
+    };
+  }
+
+  if (validTool === 'remember_fact') {
+    const title = typeof args.title === 'string' ? args.title.trim() : '';
+    const content = typeof args.content === 'string' ? args.content.trim() : '';
+    const category = typeof args.category === 'string' ? (args.category as CodingMemoryCategory) : 'fact';
+    if (!title || !content) {
+      const msg = 'remember_fact benötigt title und content.';
+      return {
+        event: { id, tool: validTool, args, ok: false, summary: msg, resultPreview: msg },
+        outputText: msg,
+      };
+    }
+    if (!ctx.memoryStore || !ctx.onMemoryMutated) {
+      const msg = 'Langzeit-Gedächtnis ist im aktuellen Kontext nicht verfügbar.';
+      return {
+        event: { id, tool: validTool, args, ok: false, summary: msg, resultPreview: msg },
+        outputText: msg,
+      };
+    }
+    const updated = upsertMemoryEntry(ctx.memoryStore, {
+      title,
+      content,
+      category,
+      source: 'tool',
+    });
+    ctx.memoryStore = updated.store;
+    ctx.onMemoryMutated(updated.store);
+    const msg = `Dauerhaft gemerkt [${updated.entry.category}]: "${updated.entry.title}"${
+      updated.redacted ? ' (mögliche Secrets entfernt)' : ''
+    }`;
+    return {
+      event: {
+        id,
+        tool: validTool,
+        args: { title: updated.entry.title, category: updated.entry.category },
+        ok: true,
+        summary: msg,
+        resultPreview: updated.entry.content.slice(0, 400),
+      },
+      outputText: msg,
+      memoryUpdated: true,
+    };
+  }
+
+  if (validTool === 'recall_memory') {
+    const query = typeof args.query === 'string' ? args.query : '';
+    if (!ctx.memoryStore) {
+      const msg = 'Langzeit-Gedächtnis ist leer oder nicht geladen.';
+      return {
+        event: { id, tool: validTool, args, ok: true, summary: msg, resultPreview: msg },
+        outputText: msg,
+      };
+    }
+    const hits = searchMemoryEntries(ctx.memoryStore, query, false);
+    const out =
+      hits.length === 0
+        ? `Keine Gedächtnis-Einträge für "${query || '*'}" gefunden.`
+        : hits.map((h) => `- [${h.category.toUpperCase()}] ${h.title}: ${h.content}`).join('\n');
+    return {
+      event: {
+        id,
+        tool: validTool,
+        args,
+        ok: true,
+        summary: `${hits.length} Gedächtnis-Treffer`,
         resultPreview: out.slice(0, 600),
       },
       outputText: out,

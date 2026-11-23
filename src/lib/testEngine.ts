@@ -591,6 +591,14 @@ function resolveDefaultEndpoint(
     };
   }
 
+  // 1b) Live-verified overrides where legacy catalog text contains an outdated non-API host
+  if (idLower === 'notrack-ai' || idLower.includes('notrack')) {
+    return {
+      base: 'https://api.notrack.ai/v1',
+      note: 'Offizielle NoTrack-API (notrack-uncensored · 100K Kontext · $0,50 Gratis-Startguthaben · native Tools & Streaming). Webchat /chat blockt Bots (HTTP 403).',
+    };
+  }
+
   // 2) Explicit inline API endpoint documented directly in verbindungsart (e.g. "(opencode.ai/zen/v1; ...)")
   const embeddedMatch = (provider.verbindungsart || '').match(
     /\(([a-z0-9.-]+\.[a-z]{2,}\/[a-z0-9/_-]*)/i
@@ -902,6 +910,7 @@ const VERIFIED_API_KEY_CONSOLES: ReadonlyArray<{
   { match: (id, u) => id === 'poe' || id.includes('poe-api') || u.includes('poe.com'), url: 'https://poe.com/api/keys' },
   { match: (id, u) => id === 'api-airforce' || u.includes('api.airforce'), url: 'https://api.airforce' },
   { match: (id, u) => id === 'electronhub' || u.includes('electronhub.ai'), url: 'https://www.electronhub.ai' },
+  { match: (id, u) => id === 'notrack-ai' || u.includes('notrack.ai'), url: 'https://notrack.ai/api/keys' },
   { match: (id, u) => id === 'uplinkswitch' || u.includes('uplinkswitch.com'), url: 'https://uplinkswitch.com' },
 ];
 

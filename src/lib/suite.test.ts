@@ -900,7 +900,7 @@ test('Newly verified OpenAI-compatible REST APIs (23 GELB + venice-ai) resolve c
     { id: 'akashml', baseUrl: 'https://api.akashml.com/v1' },
     { id: 'nous-research', baseUrl: 'https://inference-api.nousresearch.com/v1' },
     { id: 'tinfoil-sh', baseUrl: 'https://inference.tinfoil.sh/v1', defaultModel: 'deepseek-v4-1-flash' },
-    { id: 'notrack-ai', baseUrl: 'https://notrack.ai/v1' },
+    { id: 'notrack-ai', baseUrl: 'https://api.notrack.ai/v1', defaultModel: 'notrack-uncensored' },
     { id: 'gab-ai', baseUrl: 'https://gab.ai/v1', defaultModel: 'auto' },
     { id: 'unfilteredaimodels', baseUrl: 'https://api.unfilteredaimodels.com/v1' },
   ];
@@ -1244,7 +1244,7 @@ test('CodingTools & Cloud Notebook Generator: sandboxed tool execution, ReAct ex
     fs.writeFileSync(path.join(tmpRoot, '.env'), 'API_SECRET=topsecret\n', 'utf8');
 
     const allEnabled = new Set<CodingToolId>(CODING_TOOL_DEFINITIONS.map((t) => t.id));
-    assert.equal(buildOpenAiToolSchemas(allEnabled).length, 5);
+    assert.equal(buildOpenAiToolSchemas(allEnabled).length, 8);
 
     const ctx = { rootDir: tmpRoot, activeProject: null, enabledTools: allEnabled };
 
@@ -1362,5 +1362,386 @@ test('isLikelyTruncatedOutput and extractCodeBlocksWithPaths handle AI Horde cut
   assert.equal(extracted[2].path, 'coding-workspace/backend/src/routes/tutorials.ts');
   assert.equal(extracted[2].fenceIndex, 3);
 });
+
+import {
+  applySearchReplacePatches,
+  buildDiffModeInstruction,
+  computeLineDiff,
+  hasSearchReplaceHunks,
+  parseSearchReplaceBlocks,
+} from './codingDiff.ts';
+import {
+  buildSafeSandboxCommand,
+  buildSanitizedChildEnv,
+  runSafeSandboxCommand,
+} from './codingSandboxRunner.ts';
+import {
+  createSseFrameParser,
+  formatSseFrame,
+  type CodingStreamEvent,
+} from './codingStream.ts';
+
+test('Stage 1 Diff-Engine: SEARCH/REPLACE parsing, exact/trimmed patching, and LCS line diff', () => {
+  const samplePatch = [
+    '```diff:coding-workspace/app.ts',
+    '<<<<<<< SEARCH',
+    'export const version = 1;',
+    '=======',
+    'export const version = 2;',
+    'export const patched = true;',
+    '>>>>>>> REPLACE',
+    '```',
+  ].join('\n');
+
+  assert.equal(hasSearchReplaceHunks(samplePatch), true);
+  assert.equal(hasSearchReplaceHunks('const plain = true;'), false);
+
+  const hunks = parseSearchReplaceBlocks(samplePatch);
+  assert.equal(hunks.length, 1);
+  assert.equal(hunks[0].targetPath, 'coding-workspace/app.ts');
+
+  const original = 'const title = "demo";\nexport const version = 1;\nconsole.log(title);';
+  const applied = applySearchReplacePatches(original, hunks);
+  assert.equal(applied.ok, true);
+  assert.equal(applied.appliedCount, 1);
+  assert.equal(applied.failedIndices.length, 0);
+  assert.ok(applied.content.includes('export const version = 2;'));
+  assert.ok(applied.content.includes('export const patched = true;'));
+
+  // Indentation-tolerant fallback match
+  const indentedOriginal = 'function run() {\n    const x = 1;\n    return x;\n}';
+  const trimmedPatch = applySearchReplacePatches(indentedOriginal, [
+    { search: 'const x = 1;\nreturn x;', replace: '  const x = 42;\n  return x;' },
+  ]);
+  assert.equal(trimmedPatch.ok, true);
+  assert.ok(trimmedPatch.content.includes('const x = 42;'));
+
+  // Unmatched SEARCH block reports clean error
+  const missing = applySearchReplacePatches(original, [
+    { search: 'does_not_exist()', replace: 'replaced()' },
+  ]);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.appliedCount, 0);
+  assert.deepEqual(missing.failedIndices, [0]);
+
+  // LCS line diff counts and line numbers
+  const diff = computeLineDiff(original, applied.content);
+  assert.equal(diff.removedCount, 1);
+  assert.equal(diff.addedCount, 2);
+  assert.equal(diff.unchangedCount, 2);
+  assert.equal(diff.lines.find((l) => l.type === 'removed')?.oldLine, 2);
+  assert.equal(diff.lines.find((l) => l.type === 'added')?.newLine, 2);
+  assert.ok(buildDiffModeInstruction().includes('<<<<<<< SEARCH'));
+});
+
+test('Stage 1 SSE Streaming: formatSseFrame + incremental chunk-split parser', () => {
+  const inputEvents: CodingStreamEvent[] = [
+    { type: 'status', message: 'Verbinde mit Provider...' },
+    { type: 'thinking', delta: 'Schritt 1: Analysiere Datei.' },
+    { type: 'token', delta: 'Hallo ' },
+    { type: 'token', delta: 'Welt!' },
+    {
+      type: 'tool',
+      event: {
+        id: 't1',
+        tool: 'list_workspace_files',
+        args: { dir: '' },
+        ok: true,
+        summary: 'Workspace aufgelistet',
+        resultPreview: 'coding-workspace/',
+      },
+    },
+    {
+      type: 'done',
+      payload: { ok: true, reply: 'Hallo Welt!', latencyMs: 120 },
+    },
+  ];
+
+  const wire = `: keepalive\n\n${inputEvents.map(formatSseFrame).join('')}`;
+  const parsedEvents: CodingStreamEvent[] = [];
+  const parser = createSseFrameParser((ev) => parsedEvents.push(ev));
+
+  // Feed in tiny 7-char chunks to stress boundary reassembly
+  for (let i = 0; i < wire.length; i += 7) {
+    parser.push(wire.slice(i, i + 7));
+  }
+  parser.flush();
+
+  assert.equal(parsedEvents.length, inputEvents.length);
+  assert.deepEqual(parsedEvents, inputEvents);
+});
+
+test('Stage 1 Sandbox Runner: env secret stripping, workspace confinement, approval gate, and real execution', async () => {
+  const sanitized = buildSanitizedChildEnv({
+    PATH: '/usr/bin',
+    OPENAI_API_KEY: 'sk-secret-openai',
+    GEMINI_API_KEY: 'AIza-secret-gemini',
+    CUSTOM_TOKEN: 'super-secret',
+  });
+  assert.equal(sanitized.PATH, '/usr/bin');
+  assert.equal(sanitized.OPENAI_API_KEY, undefined);
+  assert.equal(sanitized.GEMINI_API_KEY, undefined);
+  assert.equal(sanitized.CUSTOM_TOKEN, undefined);
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-suite-sandbox-test-'));
+  try {
+    fs.writeFileSync(path.join(tmpRoot, 'server.ts'), 'console.log("root-secret");');
+    const sandboxDir = path.join(tmpRoot, 'coding-workspace');
+    fs.mkdirSync(sandboxDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sandboxDir, 'ok_script.js'),
+      'console.log("SANDBOX_OK:" + (process.env.OPENAI_API_KEY || "STRIPPED"));\n'
+    );
+    fs.writeFileSync(
+      path.join(sandboxDir, 'fail_script.js'),
+      'console.error("BOOM_ERR"); process.exit(2);\n'
+    );
+    fs.writeFileSync(path.join(sandboxDir, 'page.html'), '<h1>Hi</h1>');
+
+    // 1. Missing human-in-the-loop approval must be blocked
+    const unapproved = await runSafeSandboxCommand({
+      rootDir: tmpRoot,
+      presetId: 'node_run',
+      targetFile: 'coding-workspace/ok_script.js',
+      confirmExecution: false,
+    });
+    assert.equal(unapproved.ok, false);
+    assert.ok(unapproved.error?.includes('Freigabe'));
+
+    // 2. Traversal & non-sandbox root files must be blocked
+    assert.equal(
+      buildSafeSandboxCommand({ rootDir: tmpRoot, presetId: 'node_run', targetFile: '../server.ts' }).ok,
+      false
+    );
+    assert.equal(
+      buildSafeSandboxCommand({ rootDir: tmpRoot, presetId: 'tsx_run', targetFile: 'server.ts' }).ok,
+      false
+    );
+
+    // 3. Disallowed extension for preset must be blocked
+    assert.equal(
+      buildSafeSandboxCommand({ rootDir: tmpRoot, presetId: 'node_run', targetFile: 'coding-workspace/page.html' }).ok,
+      false
+    );
+
+    // 4. Real approved execution succeeds and strips secrets from env
+    const prevKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-must-not-leak';
+    try {
+      const okRun = await runSafeSandboxCommand({
+        rootDir: tmpRoot,
+        presetId: 'node_run',
+        targetFile: 'coding-workspace/ok_script.js',
+        confirmExecution: true,
+      });
+      assert.equal(okRun.ok, true);
+      assert.equal(okRun.exitCode, 0);
+      assert.ok(okRun.stdout.includes('SANDBOX_OK:STRIPPED'));
+    } finally {
+      if (prevKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = prevKey;
+    }
+
+    // 5. Failing script captures non-zero exit code and stderr cleanly
+    const failRun = await runSafeSandboxCommand({
+      rootDir: tmpRoot,
+      presetId: 'node_run',
+      targetFile: 'coding-workspace/fail_script.js',
+      confirmExecution: true,
+    });
+    assert.equal(failRun.ok, false);
+    assert.equal(failRun.exitCode, 2);
+    assert.ok(failRun.stderr.includes('BOOM_ERR'));
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+import {
+  compileMemorySystemBlock,
+  createDefaultMemoryStore,
+  estimateContextTokenBudget,
+  extractCodeOutline,
+  redactSecretsFromMemoryText,
+  searchMemoryEntries,
+  upsertMemoryEntry,
+  validateMemoryStorePayload,
+} from './codingMemory.ts';
+import { FREE_UNCENSORED_API_PRESETS } from './codingTypes.ts';
+
+test('NoTrack.ai official API preset, API-key console URL, and default model resolve cleanly', () => {
+  const preset = FREE_UNCENSORED_API_PRESETS.find((p) => p.id === 'notrack-ai');
+  assert.ok(preset, 'notrack-ai preset must exist in FREE_UNCENSORED_API_PRESETS');
+  assert.equal(preset.baseUrl, 'https://api.notrack.ai/v1');
+  assert.equal(preset.defaultModel, 'notrack-uncensored');
+  assert.equal(preset.contextWindow, 100_000);
+  assert.equal(preset.keyPageUrl, 'https://notrack.ai/api/keys');
+  assert.equal(preset.docsUrl, 'https://notrack.ai/api/docs');
+  assert.equal(preset.webChatUrl, 'https://notrack.ai/chat');
+
+  const prov = classified.find((p) => p.id === 'notrack-ai')!;
+  assert.ok(prov);
+  assert.equal(resolveProviderApiKeyPage(prov)?.url, 'https://notrack.ai/api/keys');
+  assert.equal(resolveDefaultChatModel('notrack-ai'), 'notrack-uncensored');
+});
+
+test('CodingMemory Engine: secret redaction, deduplicated upsert, search, system-block compile, code outline, and context budget', () => {
+  const red = redactSecretsFromMemoryText('Nutze sk-notrack-1234567890abcdef und hf_AbCdEfGhIjKlMnOpQrSt');
+  assert.equal(red.redacted, true);
+  assert.ok(!red.text.includes('sk-notrack-1234567890abcdef'));
+  assert.ok(!red.text.includes('hf_AbCdEfGhIjKlMnOpQrSt'));
+  assert.ok(red.text.includes('[REDACTED_SECRET]'));
+
+  let store = createDefaultMemoryStore();
+  const add1 = upsertMemoryEntry(store, {
+    title: 'Architektur-Stack',
+    content: 'React 19 + Express + TypeScript (Key sk-notrack-abcdef12345678)',
+    category: 'decision',
+    source: 'user',
+  });
+  store = add1.store;
+  assert.equal(add1.redacted, true);
+  assert.equal(store.entries.length, 1);
+  assert.ok(store.entries[0].content.includes('[REDACTED_SECRET]'));
+
+  // Upsert with same title updates existing entry rather than duplicating
+  const add1Update = upsertMemoryEntry(store, {
+    title: 'architektur-stack',
+    content: 'React 19 + Express + Tailwind v4',
+    category: 'decision',
+  });
+  store = add1Update.store;
+  assert.equal(store.entries.length, 1);
+  assert.equal(store.entries[0].content, 'React 19 + Express + Tailwind v4');
+
+  const add2 = upsertMemoryEntry(store, {
+    title: 'Deaktivierter Hinweis',
+    content: 'Soll nicht injiziert werden',
+    category: 'todo',
+    enabled: false,
+  });
+  store = add2.store;
+  assert.equal(store.entries.length, 2);
+
+  // Search respects enabled filter by default
+  assert.equal(searchMemoryEntries(store, 'Tailwind').length, 1);
+  assert.equal(searchMemoryEntries(store, 'injiziert').length, 0);
+  assert.equal(searchMemoryEntries(store, 'injiziert', true).length, 1);
+
+  // Compile block includes only enabled entries & respects autoInject=false
+  const compiled = compileMemorySystemBlock(store);
+  assert.equal(compiled.activeCount, 1);
+  assert.ok(compiled.block.toLowerCase().includes('architektur-stack'));
+  assert.ok(compiled.block.includes('React 19 + Express + Tailwind v4'));
+  assert.ok(!compiled.block.includes('Deaktivierter Hinweis'));
+  assert.equal(compileMemorySystemBlock({ ...store, autoInject: false }).activeCount, 0);
+
+  // Payload validation sanitizes & preserves valid store
+  const validated = validateMemoryStorePayload(store);
+  assert.equal(validated.ok, true);
+  if (validated.ok) assert.equal(validated.store.entries.length, 2);
+  assert.equal(validateMemoryStorePayload(null).ok, false);
+
+  // Code outline extraction (TS + Express + Python)
+  const tsCode = [
+    'export interface User { id: string }',
+    'export type Role = "admin" | "user";',
+    'export async function fetchUser(id: string) {}',
+    'const helper = (x: number) => x + 1;',
+    "app.get('/api/health', handler);",
+  ].join('\n');
+  const tsSymbols = extractCodeOutline(tsCode, 'typescript');
+  assert.deepEqual(
+    tsSymbols.map((s) => `${s.kind}:${s.name}@${s.line}`),
+    [
+      'interface:User@1',
+      'type:Role@2',
+      'function:fetchUser@3',
+      'const:helper@4',
+      'route:GET /api/health@5',
+    ]
+  );
+
+  const pySymbols = extractCodeOutline('class Engine:\n    pass\nasync def run_job():\n    return 1\n', 'python');
+  assert.deepEqual(
+    pySymbols.map((s) => `${s.kind}:${s.name}@${s.line}`),
+    ['class:Engine@1', 'function:run_job@3']
+  );
+
+  // Context budget meter thresholds
+  const budgetOk = estimateContextTokenBudget({
+    systemText: 'sys',
+    memoryText: 'mem',
+    pinnedFilesText: '',
+    historyTexts: ['hi'],
+    contextWindow: 100_000,
+  });
+  assert.equal(budgetOk.status, 'ok');
+  const budgetCrit = estimateContextTokenBudget({
+    systemText: 'a'.repeat(16000),
+    memoryText: '',
+    pinnedFilesText: '',
+    historyTexts: [],
+    contextWindow: 4096,
+  });
+  assert.equal(budgetCrit.status, 'critical');
+});
+
+test('CodingTools: inspect_code_outline, remember_fact, and recall_memory tools execute safely with persistence callback', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'coding-tools-mem-test-'));
+  try {
+    fs.mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpRoot, 'src', 'api.ts'),
+      'export interface Resp { ok: boolean }\nexport function startServer() { return true; }\napp.post("/api/items", fn);\n',
+      'utf8'
+    );
+
+    let memStore = createDefaultMemoryStore();
+    let mutationCount = 0;
+    const allEnabled = new Set<CodingToolId>(CODING_TOOL_DEFINITIONS.map((t) => t.id));
+    const ctx = {
+      rootDir: tmpRoot,
+      activeProject: null,
+      enabledTools: allEnabled,
+      memoryStore: memStore,
+      onMemoryMutated: (next: typeof memStore) => {
+        memStore = next;
+        ctx.memoryStore = next;
+        mutationCount++;
+      },
+    };
+
+    const outlineRes = executeCodingTool('inspect_code_outline', { path: 'src/api.ts' }, ctx);
+    assert.equal(outlineRes.event.ok, true);
+    assert.ok(outlineRes.outputText.includes('interface Resp'));
+    assert.ok(outlineRes.outputText.includes('function startServer'));
+    assert.ok(outlineRes.outputText.includes('POST /api/items'));
+
+    const remRes = executeCodingTool(
+      'remember_fact',
+      {
+        title: 'Bevorzugter Stil',
+        content: 'Immer strict TypeScript ohne any, Key sk-notrack-999999999999',
+        category: 'preference',
+      },
+      ctx
+    );
+    assert.equal(remRes.event.ok, true);
+    assert.equal(remRes.memoryUpdated, true);
+    assert.equal(mutationCount, 1);
+    assert.equal(memStore.entries.length, 1);
+    assert.ok(memStore.entries[0].content.includes('[REDACTED_SECRET]'));
+
+    const recallRes = executeCodingTool('recall_memory', { query: 'TypeScript' }, ctx);
+    assert.equal(recallRes.event.ok, true);
+    assert.ok(recallRes.outputText.includes('Bevorzugter Stil'));
+    assert.ok(recallRes.outputText.includes('strict TypeScript'));
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+
 
 

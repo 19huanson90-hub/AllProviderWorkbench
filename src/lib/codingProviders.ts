@@ -17,6 +17,9 @@ import {
   type CodingToolEvent,
   type ThinkingMode,
 } from './codingTypes.ts';
+import type { CodingStreamEvent } from './codingStream.ts';
+
+export type CodingStreamCallback = (event: CodingStreamEvent) => void;
 
 const ALLOWED_TUNNEL_SUFFIXES = [
   '.trycloudflare.com',
@@ -128,13 +131,24 @@ export function isLikelyTruncatedOutput(text: string, maxTokens: number): boolea
   return false;
 }
 
-async function fetchTimed(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+async function fetchTimed(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  externalSignal?: AbortSignal
+): Promise<Response> {
   const ctrl = new AbortController();
+  const onExtAbort = () => ctrl.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) ctrl.abort();
+    else externalSignal.addEventListener('abort', onExtAbort, { once: true });
+  }
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: ctrl.signal });
   } finally {
     clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExtAbort);
   }
 }
 
@@ -296,6 +310,8 @@ export interface HfSpaceCallOptions {
   useDflash: boolean;
   imageBase64?: string;
   toolCtx?: ToolExecutionContext;
+  onStream?: CodingStreamCallback;
+  signal?: AbortSignal;
 }
 
 export async function runHfSpaceChat(opts: HfSpaceCallOptions): Promise<UnifiedCodingReply> {
@@ -436,10 +452,12 @@ export async function runHfSpaceChat(opts: HfSpaceCallOptions): Promise<UnifiedC
     }
 
     try {
+      opts.onStream?.({ type: 'status', message: `Verbinde mit HF Space (${preset.id})…` });
       const postRes = await fetchTimed(
         targetUrl,
         { method: 'POST', headers, body: JSON.stringify({ data: dataPayload }) },
-        15000
+        15000,
+        opts.signal
       );
       const postTxt = await postRes.text();
       if (!postRes.ok) {
@@ -466,12 +484,75 @@ export async function runHfSpaceChat(opts: HfSpaceCallOptions): Promise<UnifiedC
         };
       }
 
+      opts.onStream?.({ type: 'status', message: 'ZeroGPU-Stream aktiv — warte auf erste Tokens…' });
       const sseRes = await fetchTimed(
         `${targetUrl}/${encodeURIComponent(eventId)}`,
         { method: 'GET', headers: opts.hfToken?.trim() ? { Authorization: `Bearer ${opts.hfToken.trim()}` } : {} },
-        Math.max(45000, (opts.gpuDuration + 25) * 1000)
+        Math.max(45000, (opts.gpuDuration + 25) * 1000),
+        opts.signal
       );
-      const sseText = await sseRes.text();
+
+      let sseText = '';
+      if (opts.onStream && sseRes.body) {
+        const reader = sseRes.body.getReader();
+        const decoder = new TextDecoder();
+        let lineBuf = '';
+        let currentEvent = '';
+        let sentReply = '';
+        let sentThinking = '';
+
+        const processGradioLine = (rawLine: string) => {
+          const line = rawLine.trim();
+          if (line.startsWith('event:')) {
+            currentEvent = line.slice(6).trim();
+          } else if (line.startsWith('data:') && (currentEvent === 'generating' || currentEvent === 'complete')) {
+            const payloadStr = line.slice(5).trim();
+            if (!payloadStr || payloadStr === 'null') return;
+            try {
+              const parsedChunk = JSON.parse(payloadStr) as unknown;
+              if (!Array.isArray(parsedChunk) || parsedChunk.length === 0) return;
+              const first = parsedChunk[0];
+              let nextReply = '';
+              let nextThink = '';
+              if (first && typeof first === 'object' && !Array.isArray(first)) {
+                const rec = first as Record<string, unknown>;
+                if (typeof rec.content === 'string') nextReply = rec.content;
+                if (typeof rec.reasoning === 'string') nextThink = rec.reasoning;
+              } else if (typeof first === 'string') {
+                nextReply = first;
+              }
+              if (nextThink.length > sentThinking.length && nextThink.startsWith(sentThinking)) {
+                opts.onStream?.({ type: 'thinking', delta: nextThink.slice(sentThinking.length) });
+                sentThinking = nextThink;
+              }
+              if (nextReply.length > sentReply.length && nextReply.startsWith(sentReply)) {
+                const delta = nextReply.slice(sentReply.length);
+                if (!delta.includes('<tool_call>')) {
+                  opts.onStream?.({ type: 'token', delta });
+                }
+                sentReply = nextReply;
+              }
+            } catch {
+              // ignore partial JSON
+            }
+          }
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          sseText += chunk;
+          lineBuf += chunk;
+          const parts = lineBuf.split(/\r?\n/);
+          lineBuf = parts.pop() || '';
+          for (const p of parts) processGradioLine(p);
+        }
+        if (lineBuf.trim()) processGradioLine(lineBuf);
+      } else {
+        sseText = await sseRes.text();
+      }
+
       const parsed = parseGradioSseOutput(sseText);
       if (!parsed.ok || !parsed.reply) {
         return {
@@ -495,6 +576,7 @@ export async function runHfSpaceChat(opts: HfSpaceCallOptions): Promise<UnifiedC
         for (const call of toolCalls) {
           const exec = executeCodingTool(call.name, call.arguments, opts.toolCtx);
           toolEvents.push(exec.event);
+          opts.onStream?.({ type: 'tool', event: exec.event });
           if (exec.writtenFilePath) writtenFiles.push(exec.writtenFilePath);
           resultBlocks.push(`<tool_result name="${call.name}">\n${exec.outputText}\n</tool_result>`);
         }
@@ -550,6 +632,8 @@ export interface AiHordeCallOptions {
   allowDowngrade: boolean;
   autoContinue?: boolean;
   toolCtx?: ToolExecutionContext;
+  onStream?: CodingStreamCallback;
+  signal?: AbortSignal;
 }
 
 export async function fetchAiHordeModels(): Promise<{
@@ -645,6 +729,10 @@ export async function runAiHordeChat(opts: AiHordeCallOptions): Promise<UnifiedC
       models: opts.model && opts.model.trim() ? [opts.model.trim()] : undefined,
     };
 
+    opts.onStream?.({
+      type: 'status',
+      message: `Sende Job an AI Horde (${opts.model || 'Auto-Worker'})…`,
+    });
     const postRes = await fetchTimed(
       targetUrl,
       {
@@ -656,7 +744,8 @@ export async function runAiHordeChat(opts: AiHordeCallOptions): Promise<UnifiedC
         },
         body: JSON.stringify(body),
       },
-      15000
+      15000,
+      opts.signal
     );
     const postTxt = await postRes.text();
     if (!postRes.ok) {
@@ -680,11 +769,15 @@ export async function runAiHordeChat(opts: AiHordeCallOptions): Promise<UnifiedC
     const deadline = Date.now() + 75_000;
 
     while (Date.now() < deadline) {
+      if (opts.signal?.aborted) {
+        return { ok: false, targetUrl: statusUrl, error: 'Anfrage abgebrochen.' };
+      }
       await new Promise((r) => setTimeout(r, 1200));
       const stRes = await fetchTimed(
         statusUrl,
         { method: 'GET', headers: { 'Client-Agent': 'ai-provider-suite-coding-studio:1.0:workbench' } },
-        10000
+        10000,
+        opts.signal
       );
       if (!stRes.ok) continue;
       const st = (await stRes.json()) as {
@@ -692,6 +785,9 @@ export async function runAiHordeChat(opts: AiHordeCallOptions): Promise<UnifiedC
         faulted?: boolean;
         is_possible?: boolean;
         kudos?: number;
+        queue_position?: number;
+        wait_time?: number;
+        processing?: number;
         generations?: Array<{ text?: string; model?: string; worker_name?: string }>;
       };
       if (st.faulted || st.is_possible === false) {
@@ -701,6 +797,13 @@ export async function runAiHordeChat(opts: AiHordeCallOptions): Promise<UnifiedC
           error:
             'AI Horde meldet: Kein passender Worker verfügbar (Tipp: "Slow Worker" oder "Allow Downgrade" aktivieren oder Modell mit vielen Workern wählen).',
         };
+      }
+      if (!st.done) {
+        const waitHint =
+          st.processing && st.processing > 0
+            ? `Worker generiert aktiv (ETA ~${st.wait_time ?? 0}s)…`
+            : `AI Horde Warteschlange: Position ${st.queue_position ?? '?'} · ETA ~${st.wait_time ?? '?'}s…`;
+        opts.onStream?.({ type: 'status', message: waitHint });
       }
       if (st.done && Array.isArray(st.generations) && st.generations.length > 0) {
         const g = st.generations[0];
@@ -740,6 +843,9 @@ export async function runAiHordeChat(opts: AiHordeCallOptions): Promise<UnifiedC
       }
 
       let combinedRaw = firstGen.text;
+      if (combinedRaw && !combinedRaw.includes('<tool_call>')) {
+        opts.onStream?.({ type: 'token', delta: combinedRaw });
+      }
       let totalKudos = firstGen.kudos ?? 0;
       let lastModel = firstGen.model;
       let lastWorker = firstGen.worker_name;
@@ -754,9 +860,14 @@ export async function runAiHordeChat(opts: AiHordeCallOptions): Promise<UnifiedC
         isLikelyTruncatedOutput(combinedRaw, requestedMaxLen) &&
         Date.now() - start < 95_000
       ) {
+        opts.onStream?.({
+          type: 'status',
+          message: `Auto-Fortsetzung ${continuationChunks + 1}/${maxContinuations} auf AI Horde…`,
+        });
         const contGen = await runSingleHordeGeneration(basePrompt + combinedRaw);
         if (!contGen.ok || !contGen.text) break;
         combinedRaw += contGen.text;
+        opts.onStream?.({ type: 'token', delta: contGen.text });
         totalKudos += contGen.kudos ?? 0;
         lastModel = contGen.model || lastModel;
         lastWorker = contGen.worker_name || lastWorker;
@@ -779,6 +890,7 @@ export async function runAiHordeChat(opts: AiHordeCallOptions): Promise<UnifiedC
         for (const call of toolCalls) {
           const exec = executeCodingTool(call.name, call.arguments, opts.toolCtx);
           toolEvents.push(exec.event);
+          opts.onStream?.({ type: 'tool', event: exec.event });
           if (exec.writtenFilePath) writtenFiles.push(exec.writtenFilePath);
           resultBlocks.push(`<tool_result name="${call.name}">\n${exec.outputText}\n</tool_result>`);
         }
@@ -838,6 +950,8 @@ export interface OpenAiToolChatOptions {
   seed?: number;
   numCtx?: number; // Ollama cloud tunnel option
   toolCtx?: ToolExecutionContext;
+  onStream?: CodingStreamCallback;
+  signal?: AbortSignal;
 }
 
 export async function runOpenAiCompatibleCodingChat(
@@ -845,8 +959,9 @@ export async function runOpenAiCompatibleCodingChat(
 ): Promise<UnifiedCodingReply> {
   const start = Date.now();
   const targetUrl = `${opts.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const wantsStream = typeof opts.onStream === 'function';
   const headers: Record<string, string> = {
-    Accept: 'application/json',
+    Accept: wantsStream ? 'text/event-stream, application/json' : 'application/json',
     'Content-Type': 'application/json',
   };
   if (opts.apiKey && opts.apiKey.trim()) {
@@ -872,7 +987,7 @@ export async function runOpenAiCompatibleCodingChat(
     const payload: Record<string, unknown> = {
       model: opts.model.trim() || 'default',
       messages: convo,
-      stream: false,
+      stream: wantsStream,
     };
     if (typeof opts.temperature === 'number' && Number.isFinite(opts.temperature)) {
       payload.temperature = Math.max(0, Math.min(2, opts.temperature));
@@ -901,25 +1016,176 @@ export async function runOpenAiCompatibleCodingChat(
     }
 
     try {
+      opts.onStream?.({
+        type: 'status',
+        message: round === 0 ? `Verbinde mit ${opts.label} (${opts.model})…` : `Tool-Runde ${round + 1} mit ${opts.label}…`,
+      });
       const response = await fetchTimed(
         targetUrl,
         { method: 'POST', headers, body: JSON.stringify(payload) },
-        90000
+        95000,
+        opts.signal
       );
+
+      // Transient burst HTTP 429 (e.g. OVHcloud free tier): wait 2.2s and retry once automatically
+      if (response.status === 429 && !retried429) {
+        try {
+          await response.body?.cancel();
+        } catch {
+          // ignore
+        }
+        retried429 = true;
+        opts.onStream?.({ type: 'status', message: `Rate-Limit (429) bei ${opts.label} — automatischer Retry in 2,2 s…` });
+        await new Promise((r) => setTimeout(r, 2200));
+        round--;
+        continue;
+      }
+
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+
+      // True OpenAI SSE streaming path
+      if (wantsStream && response.ok && contentType.includes('text/event-stream') && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let sseBuf = '';
+        let accReply = '';
+        let accThinking = '';
+        let finishReason: string | undefined;
+        let streamModel: string | undefined;
+        let streamUsage: UnifiedCodingReply['usage'] | undefined;
+        const toolCallAcc = new Map<number, { id: string; name: string; arguments: string }>();
+
+        const handleSseLine = (rawLine: string) => {
+          const line = rawLine.trim();
+          if (!line.startsWith('data:')) return;
+          const dataStr = line.slice(5).trim();
+          if (!dataStr || dataStr === '[DONE]') return;
+          try {
+            const chunk = JSON.parse(dataStr) as Record<string, unknown>;
+            if (typeof chunk.model === 'string' && chunk.model) streamModel = chunk.model;
+            if (chunk.usage && typeof chunk.usage === 'object') {
+              const u = chunk.usage as Record<string, unknown>;
+              streamUsage = {
+                prompt_tokens: typeof u.prompt_tokens === 'number' ? u.prompt_tokens : undefined,
+                completion_tokens: typeof u.completion_tokens === 'number' ? u.completion_tokens : undefined,
+                total_tokens: typeof u.total_tokens === 'number' ? u.total_tokens : undefined,
+              };
+            }
+            const choice = Array.isArray(chunk.choices) ? (chunk.choices[0] as Record<string, unknown>) : null;
+            if (!choice) return;
+            if (typeof choice.finish_reason === 'string' && choice.finish_reason) {
+              finishReason = choice.finish_reason;
+            }
+            const delta = choice.delta as Record<string, unknown> | undefined;
+            if (!delta) return;
+
+            const reasonDelta =
+              typeof delta.reasoning_content === 'string'
+                ? delta.reasoning_content
+                : typeof delta.reasoning === 'string'
+                  ? delta.reasoning
+                  : '';
+            if (reasonDelta) {
+              accThinking += reasonDelta;
+              opts.onStream?.({ type: 'thinking', delta: reasonDelta });
+            }
+
+            if (typeof delta.content === 'string' && delta.content.length > 0) {
+              accReply += delta.content;
+              opts.onStream?.({ type: 'token', delta: delta.content });
+            }
+
+            if (Array.isArray(delta.tool_calls)) {
+              for (const rawTc of delta.tool_calls) {
+                if (!rawTc || typeof rawTc !== 'object') continue;
+                const tc = rawTc as {
+                  index?: number;
+                  id?: string;
+                  function?: { name?: string; arguments?: string };
+                };
+                const idx = typeof tc.index === 'number' ? tc.index : 0;
+                const cur = toolCallAcc.get(idx) || { id: '', name: '', arguments: '' };
+                if (typeof tc.id === 'string' && tc.id) cur.id = tc.id;
+                if (typeof tc.function?.name === 'string') cur.name += tc.function.name;
+                if (typeof tc.function?.arguments === 'string') cur.arguments += tc.function.arguments;
+                toolCallAcc.set(idx, cur);
+              }
+            }
+          } catch {
+            // ignore malformed SSE chunk
+          }
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          sseBuf += decoder.decode(value, { stream: true });
+          const lines = sseBuf.split(/\r?\n/);
+          sseBuf = lines.pop() || '';
+          for (const l of lines) handleSseLine(l);
+        }
+        if (sseBuf.trim()) handleSseLine(sseBuf);
+
+        // Execute accumulated streamed tool calls if present
+        if (toolCallAcc.size > 0 && opts.toolCtx && round < 3) {
+          const assembled = Array.from(toolCallAcc.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map(([idx, tc]) => ({
+              id: tc.id || `call_${round}_${idx}`,
+              type: 'function',
+              function: { name: tc.name, arguments: tc.arguments || '{}' },
+            }));
+          convo.push({
+            role: 'assistant',
+            content: accReply || null,
+            tool_calls: assembled,
+          });
+          for (const tc of assembled.slice(0, 4)) {
+            let parsedArgs: Record<string, unknown> = {};
+            try {
+              parsedArgs = tc.function.arguments ? (JSON.parse(tc.function.arguments) as Record<string, unknown>) : {};
+            } catch {
+              parsedArgs = {};
+            }
+            const exec = executeCodingTool(tc.function.name, parsedArgs, opts.toolCtx);
+            toolEvents.push(exec.event);
+            opts.onStream?.({ type: 'tool', event: exec.event });
+            if (exec.writtenFilePath) writtenFiles.push(exec.writtenFilePath);
+            convo.push({
+              role: 'tool',
+              tool_call_id: tc.id,
+              content: exec.outputText,
+            });
+          }
+          continue;
+        }
+
+        const split = splitThinkingFromText(accReply, accThinking || undefined);
+        const finalReply = split.reply || accReply;
+        const isCutOff =
+          finishReason === 'length' ||
+          isLikelyTruncatedOutput(finalReply, opts.maxTokens ?? 4096);
+        return {
+          ok: true,
+          httpStatus: response.status,
+          latencyMs: Date.now() - start,
+          targetUrl,
+          reply: finalReply,
+          thinking: split.thinking,
+          model: streamModel || opts.model,
+          usage: streamUsage,
+          truncated: isCutOff,
+          toolEvents: toolEvents.length > 0 ? toolEvents : undefined,
+          writtenFiles: writtenFiles.length > 0 ? writtenFiles : undefined,
+        };
+      }
+
       const rawText = (await response.text()).slice(0, 180000);
       let parsed: unknown = null;
       try {
         parsed = JSON.parse(rawText);
       } catch {
         // SSE or HTML
-      }
-
-      // Transient burst HTTP 429 (e.g. OVHcloud free tier): wait 2.2s and retry once automatically
-      if (response.status === 429 && !retried429) {
-        retried429 = true;
-        await new Promise((r) => setTimeout(r, 2200));
-        round--;
-        continue;
       }
 
       // If endpoint rejects `tools` parameter with HTTP 400/422, automatically retry cleanly without tools!
@@ -961,6 +1227,7 @@ export async function runOpenAiCompatibleCodingChat(
             }
             const exec = executeCodingTool(fnName, parsedArgs, opts.toolCtx);
             toolEvents.push(exec.event);
+            opts.onStream?.({ type: 'tool', event: exec.event });
             if (exec.writtenFilePath) writtenFiles.push(exec.writtenFilePath);
             convo.push({
               role: 'tool',
@@ -974,6 +1241,8 @@ export async function runOpenAiCompatibleCodingChat(
 
       const extracted = extractChatCompletionReply(parsed, rawText);
       if (response.ok && extracted.reply !== null) {
+        if (extracted.thinking) opts.onStream?.({ type: 'thinking', delta: extracted.thinking });
+        opts.onStream?.({ type: 'token', delta: extracted.reply });
         const finishReason =
           parsed && typeof parsed === 'object' && Array.isArray((parsed as { choices?: unknown[] }).choices)
             ? ((parsed as { choices: Array<{ finish_reason?: unknown }> }).choices[0]?.finish_reason as string | undefined)

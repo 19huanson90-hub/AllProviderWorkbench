@@ -184,6 +184,7 @@ export function resolveDefaultChatModel(providerId?: string, bridgeId?: string):
   if (pid === 'electronhub') return 'gemma-4-uncensored:free';
   if (pid === 'chutes') return 'Qwen/Qwen3.8-27B-TEE';
   if (pid === 'aionlabs') return 'aion-labs/aion-2.0';
+  if (pid === 'notrack-ai') return 'notrack-uncensored';
   return 'default';
 }
 
