@@ -71,6 +71,53 @@ export function isLocalOnlyUrl(url: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?/i.test(url.trim());
 }
 
+const KNOWN_UNFILTERED_PROVIDER_IDS = new Set<string>([
+  'unrestrictable-ai',
+  'obscurify-ai',
+  'uncensoredaichat-ai',
+  'nofilterai-ai',
+  'uncutgpt',
+  'uncensored-chat',
+  'infernus-ai',
+  'cleus-ai',
+  'ablit-app',
+  'abliteration-ai',
+  'openuncensored',
+  'magmarouter',
+  'mancer-ai',
+  'infermatic-ai',
+  'arli-ai',
+  'redpill-ai',
+  'ppq-ai',
+  'akashml',
+  'nous-research',
+  'tinfoil-sh',
+  'notrack-ai',
+  'gab-ai',
+  'unfilteredaimodels',
+  'venice-ai',
+  'featherless',
+  'nanogpt',
+  'aionlabs',
+  'chutes',
+  'api-airforce',
+  'electronhub',
+  'uplinkswitch',
+]);
+
+const UNFILTERED_KEYWORD_RE =
+  /\b(uncensored|unzensiert\w*|abliterat\w*|unfiltered|ungefiltert\w*|no[- ]?filter|xploded|mythomax)\b/i;
+
+export function detectUnfilteredProvider(
+  record: ProviderRecord,
+  securityClass: SecurityClass
+): boolean {
+  if (securityClass === 'SCHWARZ' || record.isIllegal) return false;
+  if (KNOWN_UNFILTERED_PROVIDER_IDS.has(record.id.toLowerCase())) return true;
+  const hay = `${record.id} ${record.name} ${record.beschreibung}`;
+  return UNFILTERED_KEYWORD_RE.test(hay);
+}
+
 /**
  * ZIEL 1: Strict 4-class security classification.
  *
@@ -179,6 +226,8 @@ export function classifyProvider(record: ProviderRecord): ClassifiedProvider {
   const empfohlenValue =
     record.flags.empfehlenswert ?? (securityClass === 'GRUEN' ? 'True' : 'False');
 
+  const isUnfiltered = detectUnfilteredProvider(record, securityClass);
+
   return {
     ...record,
     securityClass,
@@ -189,6 +238,7 @@ export function classifyProvider(record: ProviderRecord): ClassifiedProvider {
     testPolicy,
     expectedEnvVar,
     rule7Collision,
+    isUnfiltered,
   };
 }
 

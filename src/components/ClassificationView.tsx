@@ -1,8 +1,8 @@
-import { ExternalLink, FlaskConical, Lock, Search, X, Zap } from 'lucide-react';
+import { ArrowUpDown, ExternalLink, Flame, FlaskConical, KeyRound, Lock, Search, X, Zap } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { isUsableGreenOrGelb } from '../lib/testEngine.ts';
+import { isUsableGreenOrGelb, resolveProviderApiKeyPage } from '../lib/testEngine.ts';
 import type { ClassifiedProvider, SecurityClass } from '../lib/types.ts';
-import { SecurityClassTag } from './SecurityIndicator.tsx';
+import { SecurityClassTag, UnfilteredTag } from './SecurityIndicator.tsx';
 
 interface ClassificationViewProps {
   providers: ClassifiedProvider[];
@@ -14,6 +14,14 @@ interface ClassificationViewProps {
 }
 
 type ClassFilter = 'ALL' | SecurityClass;
+type ClassificationSort = 'default' | 'unfiltered_first' | 'name_asc' | 'class_order';
+
+const CLASS_ORDER: Record<SecurityClass, number> = {
+  GRUEN: 0,
+  GELB: 1,
+  ROT: 2,
+  SCHWARZ: 3,
+};
 
 export function ClassificationView({
   providers,
@@ -24,6 +32,8 @@ export function ClassificationView({
   onRunSingleTest,
 }: ClassificationViewProps) {
   const [classFilter, setClassFilter] = useState<ClassFilter>(initialClassFilter);
+  const [onlyUnfiltered, setOnlyUnfiltered] = useState<boolean>(false);
+  const [sortBy, setSortBy] = useState<ClassificationSort>('default');
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
   const [authFilter, setAuthFilter] = useState<string>('ALL');
   const [search, setSearch] = useState<string>('');
@@ -61,10 +71,16 @@ export function ClassificationView({
     return c;
   }, [providers]);
 
+  const unfilteredCount = useMemo(
+    () => providers.filter((p) => p.isUnfiltered).length,
+    [providers]
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return providers.filter((p) => {
+    const list = providers.filter((p) => {
       if (classFilter !== 'ALL' && p.securityClass !== classFilter) return false;
+      if (onlyUnfiltered && !p.isUnfiltered) return false;
       if (categoryFilter !== 'ALL' && !p.kategorien.includes(categoryFilter)) return false;
       if (authFilter !== 'ALL' && p.auth_typ !== authFilter) return false;
       if (q) {
@@ -72,13 +88,36 @@ export function ClassificationView({
           p.securityClass === 'SCHWARZ' || p.isIllegal ? '' : p.url;
         const hay =
           searchScope === 'name_url'
-            ? `${p.name} ${p.id} ${safeUrl}`.toLowerCase()
-            : `${p.id} ${p.name} ${safeUrl} ${p.kategorien.join(' ')} ${p.beschreibung}`.toLowerCase();
+            ? `${p.name} ${p.id} ${safeUrl} ${p.isUnfiltered ? 'unfiltered uncensored' : ''}`.toLowerCase()
+            : `${p.id} ${p.name} ${safeUrl} ${p.kategorien.join(' ')} ${p.beschreibung} ${p.isUnfiltered ? 'unfiltered uncensored' : ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [providers, classFilter, categoryFilter, authFilter, search, searchScope]);
+
+    if (sortBy === 'unfiltered_first') {
+      return [...list].sort((a, b) => {
+        if (a.isUnfiltered !== b.isUnfiltered) return a.isUnfiltered ? -1 : 1;
+        if (CLASS_ORDER[a.securityClass] !== CLASS_ORDER[b.securityClass]) {
+          return CLASS_ORDER[a.securityClass] - CLASS_ORDER[b.securityClass];
+        }
+        return a.name.localeCompare(b.name, 'de');
+      });
+    }
+    if (sortBy === 'name_asc') {
+      return [...list].sort((a, b) => a.name.localeCompare(b.name, 'de'));
+    }
+    if (sortBy === 'class_order') {
+      return [...list].sort((a, b) => {
+        if (CLASS_ORDER[a.securityClass] !== CLASS_ORDER[b.securityClass]) {
+          return CLASS_ORDER[a.securityClass] - CLASS_ORDER[b.securityClass];
+        }
+        if (a.isUnfiltered !== b.isUnfiltered) return a.isUnfiltered ? -1 : 1;
+        return a.name.localeCompare(b.name, 'de');
+      });
+    }
+    return list;
+  }, [providers, classFilter, onlyUnfiltered, sortBy, categoryFilter, authFilter, search, searchScope]);
 
   const classButtons: Array<{ value: ClassFilter; label: string }> = [
     { value: 'ALL', label: 'Alle' },
@@ -90,6 +129,8 @@ export function ClassificationView({
 
   const hasActiveFilters =
     classFilter !== 'ALL' ||
+    onlyUnfiltered ||
+    sortBy !== 'default' ||
     categoryFilter !== 'ALL' ||
     authFilter !== 'ALL' ||
     search.trim().length > 0;
@@ -155,38 +196,69 @@ export function ClassificationView({
           </div>
         </div>
 
-        {/* Class, Category & Auth Filter Row */}
-        <div className="flex flex-col gap-3 border-t border-slate-100 pt-3 lg:flex-row lg:items-center lg:justify-between">
-          <div
-            className="inline-flex flex-wrap rounded-md border border-slate-200 bg-slate-50 p-0.5"
-            role="group"
-            aria-label="Nach Sicherheitsklasse filtern"
-          >
-            {classButtons.map((btn) => {
-              const active = classFilter === btn.value;
-              return (
-                <button
-                  key={btn.value}
-                  type="button"
-                  onClick={() => setClassFilter(btn.value)}
-                  className={`rounded px-3 py-1.5 text-xs font-medium transition-colors tabular-nums ${
-                    active
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {btn.label} ({counts[btn.value]})
-                </button>
-              );
-            })}
+        {/* Class, Unfiltered, Sort, Category & Auth Filter Row */}
+        <div className="flex flex-col gap-3 border-t border-slate-100 pt-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <div
+              className="inline-flex flex-wrap rounded-md border border-slate-200 bg-slate-50 p-0.5"
+              role="group"
+              aria-label="Nach Sicherheitsklasse filtern"
+            >
+              {classButtons.map((btn) => {
+                const active = classFilter === btn.value;
+                return (
+                  <button
+                    key={btn.value}
+                    type="button"
+                    onClick={() => setClassFilter(btn.value)}
+                    className={`rounded px-3 py-1.5 text-xs font-medium transition-colors tabular-nums ${
+                      active
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {btn.label} ({counts[btn.value]})
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setOnlyUnfiltered((prev) => !prev)}
+              aria-pressed={onlyUnfiltered}
+              className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs font-semibold transition-colors tabular-nums ${
+                onlyUnfiltered
+                  ? 'border-fuchsia-600 bg-fuchsia-700 text-white shadow-xs'
+                  : 'border-fuchsia-300 bg-fuchsia-50 text-fuchsia-800 hover:bg-fuchsia-100'
+              }`}
+            >
+              <Flame className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              Nur Unfiltered ({unfilteredCount})
+            </button>
           </div>
 
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center gap-1.5">
+              <ArrowUpDown className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as ClassificationSort)}
+                aria-label="Provider sortieren"
+                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-800 focus:border-teal-700 focus:outline-none"
+              >
+                <option value="default">Sortierung: Standard</option>
+                <option value="unfiltered_first">Sortierung: Unfiltered zuerst</option>
+                <option value="class_order">Sortierung: Klasse (GRÜN → SCHWARZ)</option>
+                <option value="name_asc">Sortierung: Name (A–Z)</option>
+              </select>
+            </div>
+
             <select
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
               aria-label="Nach Kategorie filtern"
-              className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-800 focus:border-teal-700 focus:outline-none"
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800 focus:border-teal-700 focus:outline-none"
             >
               <option value="ALL">Alle Kategorien ({allCategories.length})</option>
               {allCategories.map((cat) => (
@@ -200,7 +272,7 @@ export function ClassificationView({
               value={authFilter}
               onChange={(e) => setAuthFilter(e.target.value)}
               aria-label="Nach Auth-Typ filtern"
-              className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-800 focus:border-teal-700 focus:outline-none"
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-800 focus:border-teal-700 focus:outline-none"
             >
               <option value="ALL">Alle Auth-Typen</option>
               {allAuthTypes.map((auth) => (
@@ -215,14 +287,16 @@ export function ClassificationView({
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 tabular-nums">
           <p>
             Angezeigt: <strong className="text-slate-900">{filtered.length}</strong> von{' '}
-            {providers.length} Provider-Blöcken. Zeile anklicken für vollständige Evidenz &
-            Klassifikationsbegründung.
+            {providers.length} Provider-Blöcken ({unfilteredCount} als UNFILTERED markiert). Zeile
+            anklicken für vollständige Evidenz & Klassifikationsbegründung.
           </p>
           {hasActiveFilters && (
             <button
               type="button"
               onClick={() => {
                 setClassFilter('ALL');
+                setOnlyUnfiltered(false);
+                setSortBy('default');
                 setCategoryFilter('ALL');
                 setAuthFilter('ALL');
                 setSearch('');
@@ -265,15 +339,20 @@ export function ClassificationView({
                     }`}
                   >
                     <td className="whitespace-nowrap px-4 py-2.5 align-top">
-                      <SecurityClassTag secClass={p.securityClass} />
-                      {inRouter && (
-                        <div className="mt-1 font-mono text-[10px] font-semibold text-teal-700">
-                          IM ROUTER
-                        </div>
-                      )}
+                      <div className="flex flex-col items-start gap-1">
+                        <SecurityClassTag secClass={p.securityClass} />
+                        {p.isUnfiltered && <UnfilteredTag compact />}
+                        {inRouter && (
+                          <div className="font-mono text-[10px] font-semibold text-teal-700">
+                            IM ROUTER
+                          </div>
+                        )}
+                      </div>
                     </td>
                     <td className="max-w-xs px-4 py-2.5 align-top">
-                      <div className="font-medium text-slate-900">{p.name}</div>
+                      <div className="flex flex-wrap items-center gap-1.5 font-medium text-slate-900">
+                        <span>{p.name}</span>
+                      </div>
                       <div className="font-mono text-xs text-slate-500">{p.id}</div>
                       <div className="mt-0.5 truncate font-mono text-[11px] text-slate-400">
                         {maskedUrl ? '[GESPERRT – Regel 1]' : p.url || '—'}
@@ -299,15 +378,34 @@ export function ClassificationView({
                       onClick={(e) => e.stopPropagation()}
                     >
                       {usable ? (
-                        <button
-                          type="button"
-                          onClick={() => onUseConnection(p)}
-                          aria-label={`${p.name} nutzen`}
-                          className="inline-flex items-center gap-1 rounded bg-teal-700 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-teal-800"
-                        >
-                          <Zap className="h-3 w-3" aria-hidden="true" />
-                          Nutzen
-                        </button>
+                        <div className="inline-flex items-center justify-end gap-1.5">
+                          {(() => {
+                            const keyPage = resolveProviderApiKeyPage(p);
+                            return keyPage ? (
+                              <a
+                                href={keyPage.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title={`${keyPage.label} von ${p.name} öffnen (${keyPage.url})`}
+                                aria-label={`API-Key-Seite von ${p.name} öffnen`}
+                                className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900 transition-colors hover:bg-amber-100"
+                              >
+                                <KeyRound className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                API-Key
+                                <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-70" aria-hidden="true" />
+                              </a>
+                            ) : null;
+                          })()}
+                          <button
+                            type="button"
+                            onClick={() => onUseConnection(p)}
+                            aria-label={`${p.name} nutzen`}
+                            className="inline-flex items-center gap-1 rounded bg-teal-700 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-teal-800"
+                          >
+                            <Zap className="h-3 w-3" aria-hidden="true" />
+                            Nutzen
+                          </button>
+                        </div>
                       ) : (
                         <span className="inline-flex items-center gap-1 font-mono text-xs text-slate-400">
                           <Lock className="h-3 w-3" aria-hidden="true" />
@@ -345,8 +443,9 @@ export function ClassificationView({
           >
             <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
               <div>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2.5">
                   <SecurityClassTag secClass={selectedProvider.securityClass} />
+                  {selectedProvider.isUnfiltered && <UnfilteredTag />}
                   <span className="font-mono text-xs text-slate-500">
                     Zeile {selectedProvider.sourceLineNumber} · {selectedProvider.id}
                   </span>
@@ -391,6 +490,22 @@ export function ClassificationView({
                       ? 'Prüfe…'
                       : '4-Phasen-Einzeltest starten'}
                   </button>
+                  {(() => {
+                    const keyPage = resolveProviderApiKeyPage(selectedProvider);
+                    return keyPage ? (
+                      <a
+                        href={keyPage.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={keyPage.url}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900 transition-colors hover:bg-amber-100"
+                      >
+                        <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                        API-Key holen
+                        <ExternalLink className="h-3 w-3 opacity-75" aria-hidden="true" />
+                      </a>
+                    ) : null;
+                  })()}
                 </div>
               )}
 

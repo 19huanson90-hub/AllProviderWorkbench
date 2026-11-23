@@ -33,26 +33,157 @@ export function isLoopbackHost(hostname: string): boolean {
  * Validates and resolves any chat target (allowlisted Bridge, GRÜN/GELB Provider,
  * local LiteLLM router, or custom loopback server) with strict SSRF and Rule 1/3/4 guards.
  */
-export const DUCK2API_MODELS = [
-  'gpt-5.4-mini',
-  'gpt-5.4-nano',
-  'claude-haiku-4-5',
-  'mistral-small',
-  'tinfoil/gpt-oss-120b',
-] as const;
+export interface BridgeModelOption {
+  id: string;
+  label: string;
+  note?: string;
+}
+
+/**
+ * Exclusively verified, actively supported models per allowlisted local bridge.
+ * Audited directly against upstream bridge source code and live upstream /models endpoints
+ * (excluding "default", legacy deprecated aliases, and paid-only inaccessible models).
+ */
+export const BRIDGE_VERIFIED_MODELS: Record<string, readonly BridgeModelOption[]> = {
+  qwengate: [
+    { id: 'qwen3.7-plus', label: 'qwen3.7-plus', note: 'Standard · Live chat.qwen.ai' },
+    { id: 'qwen3.8-max', label: 'qwen3.8-max', note: 'Flaggschiff · Live chat.qwen.ai' },
+  ],
+  'openai-api-server-via-codex': [
+    { id: 'gpt-5.4-mini', label: 'gpt-5.4-mini', note: 'Standard · Schnell' },
+    { id: 'gpt-5.4', label: 'gpt-5.4', note: 'Allround' },
+    { id: 'gpt-5.3-codex', label: 'gpt-5.3-codex', note: 'Codex' },
+    { id: 'gpt-5.3-codex-spark', label: 'gpt-5.3-codex-spark', note: 'Codex Spark' },
+    { id: 'gpt-5.2-codex', label: 'gpt-5.2-codex', note: 'Codex' },
+    { id: 'gpt-5.2', label: 'gpt-5.2', note: 'Allround' },
+    { id: 'gpt-5.1-codex-max', label: 'gpt-5.1-codex-max', note: 'Codex Max' },
+    { id: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini', note: 'Codex Mini' },
+    { id: 'gpt-5.1', label: 'gpt-5.1', note: 'Basis' },
+    { id: 'gpt-5.5', label: 'gpt-5.5', note: 'Erweitert' },
+    { id: 'gpt-5.6-sol', label: 'gpt-5.6-sol', note: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-terra', label: 'gpt-5.6-terra', note: 'GPT-5.6 Terra' },
+    { id: 'gpt-5.6-luna', label: 'gpt-5.6-luna', note: 'GPT-5.6 Luna' },
+  ],
+  'catgpt-gateway': [
+    { id: 'claude-browser', label: 'claude-browser', note: 'Standard · PROVIDER=claude' },
+    { id: 'catgpt-browser', label: 'catgpt-browser', note: 'ChatGPT-Modus · PROVIDER=chatgpt' },
+  ],
+  'webai-to-api': [
+    { id: 'gemini-3-flash', label: 'gemini-3-flash', note: 'Standard · Flash' },
+    { id: 'gemini-3-flash-thinking', label: 'gemini-3-flash-thinking', note: 'Thinking' },
+    { id: 'gemini-3-pro', label: 'gemini-3-pro', note: 'Pro' },
+  ],
+  freedeepseekapi: [
+    { id: 'deepseek-chat', label: 'deepseek-chat', note: 'Standard · Unified' },
+    { id: 'deepseek-reasoner', label: 'deepseek-reasoner', note: 'DeepThink' },
+    { id: 'deepseek-chat-search', label: 'deepseek-chat-search', note: 'Mit Web-Suche' },
+    { id: 'deepseek-reasoner-search', label: 'deepseek-reasoner-search', note: 'DeepThink + Web-Suche' },
+    { id: 'deepseek-v4.1-flash', label: 'deepseek-v4.1-flash', note: 'V4.1 Flash' },
+    { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash', note: 'V4 Flash' },
+  ],
+  'grok-com-to-openai': [
+    { id: 'grok-fast', label: 'grok-fast', note: 'Standard · Schnell' },
+    { id: 'grok-auto', label: 'grok-auto', note: 'Auto-Routing' },
+    { id: 'grok-expert', label: 'grok-expert', note: 'Tiefes Reasoning' },
+    { id: 'grok-heavy', label: 'grok-heavy', note: 'Multi-Agent' },
+    { id: 'grok-build', label: 'grok-build', note: 'Coding / Architektur' },
+  ],
+  duck2api: [
+    { id: 'gpt-5.4-mini', label: 'gpt-5.4-mini', note: 'Standard · OpenAI (Gratis)' },
+    { id: 'gpt-6-luna', label: 'gpt-6-luna', note: 'OpenAI (Gratis)' },
+    { id: 'claude-haiku-5-5', label: 'claude-haiku-5-5', note: 'Anthropic (Gratis)' },
+    { id: 'mistral-small-2603', label: 'mistral-small-2603', note: 'Mistral (Gratis)' },
+    { id: 'tinfoil/gpt-oss-120b', label: 'tinfoil/gpt-oss-120b', note: 'Tinfoil TEE (Gratis)' },
+    { id: 'tinfoil/gemma4-31b', label: 'tinfoil/gemma4-31b', note: 'Tinfoil TEE (Gratis)' },
+  ],
+};
+
+const BRIDGE_EXCLUDED_MODEL_IDS: Record<string, ReadonlySet<string>> = {
+  freedeepseekapi: new Set([
+    'deepseek-v3',
+    'deepseek-r1',
+    'deepseek-expert',
+    'deepseek-v4-pro',
+    'deepseek-vision',
+  ]),
+  duck2api: new Set([
+    'gpt-5.4-nano',
+    'claude-haiku-4-5',
+    'mistral-small',
+    'gpt-5.6-terra',
+    'claude-sonnet-5-5',
+    'gpt-5.6-sol',
+    'claude-opus-5-5',
+  ]),
+};
+
+export const DUCK2API_MODELS: readonly string[] = BRIDGE_VERIFIED_MODELS.duck2api.map((m) => m.id);
+
+export function getVerifiedBridgeModels(bridgeId?: string): readonly BridgeModelOption[] {
+  if (!bridgeId) return [];
+  return BRIDGE_VERIFIED_MODELS[bridgeId] ?? [];
+}
+
+/**
+ * Resolves the exclusive list of verified models for a bridge.
+ * When live /v1/models IDs are available from the running bridge, filters out "default"
+ * and known deprecated/paid-only IDs while enriching labels with curated notes.
+ */
+export function resolveVerifiedBridgeModelOptions(
+  bridgeId?: string,
+  liveModels?: readonly string[]
+): BridgeModelOption[] {
+  const curated = getVerifiedBridgeModels(bridgeId);
+  if (!bridgeId) return [];
+
+  if (Array.isArray(liveModels) && liveModels.length > 0) {
+    const excluded = BRIDGE_EXCLUDED_MODEL_IDS[bridgeId];
+    const curatedById = new Map(curated.map((m) => [m.id, m]));
+    const seen = new Set<string>();
+    const resolved: BridgeModelOption[] = [];
+
+    for (const raw of liveModels) {
+      const id = String(raw || '').trim();
+      if (!id || id.toLowerCase() === 'default' || seen.has(id)) continue;
+      if (excluded && excluded.has(id)) continue;
+      seen.add(id);
+      const match = curatedById.get(id);
+      resolved.push(
+        match
+          ? { id: match.id, label: match.label, note: match.note }
+          : { id, label: id, note: 'Live /v1/models' }
+      );
+    }
+
+    if (resolved.length > 0) return resolved;
+  }
+
+  return curated.map((m) => ({ ...m }));
+}
 
 export function resolveDefaultChatModel(providerId?: string, bridgeId?: string): string {
-  if (bridgeId === 'grok-com-to-openai') return 'grok-fast';
-  if (bridgeId === 'duck2api') return 'gpt-5.4-mini';
-  if (bridgeId === 'freedeepseekapi') return 'deepseek-chat';
-  if (bridgeId === 'openai-api-server-via-codex') return 'gpt-5.4-mini';
-  if (bridgeId === 'catgpt-gateway') return 'gpt-4o';
-  if (bridgeId === 'webai-to-api') return 'gemini-2.5-flash';
+  if (bridgeId) {
+    const firstBridgeModel = BRIDGE_VERIFIED_MODELS[bridgeId]?.[0]?.id;
+    if (firstBridgeModel) return firstBridgeModel;
+  }
   const pid = (providerId || '').toLowerCase();
   if (pid === 'pollinations' || pid.includes('pollinations')) return 'openai-fast';
   if (pid === 'ovh-ai-endpoints' || pid.includes('ovh')) return 'gpt-oss-20b';
   if (pid === 'unrestrictable-ai') return 'abliterated-model';
   if (pid === 'obscurify-ai') return 'abliteration-ai/abliterated-model';
+  if (pid === 'openuncensored') return 'abliterated-model';
+  if (pid === 'magmarouter') return 'glm-5.3-xploded';
+  if (pid === 'mancer-ai') return 'mythomax';
+  if (pid === 'redpill-ai') return 'phala/deepseek-v4.1-flash-1017-uncensored';
+  if (pid === 'tinfoil-sh') return 'deepseek-v4-1-flash';
+  if (pid === 'gab-ai') return 'auto';
+  if (pid === 'ablit-app') return 'ablit-flash';
+  if (pid === 'abliteration-ai') return 'abliterated-model';
+  if (pid === 'uplinkswitch') return 'abliterated-model';
+  if (pid === 'api-airforce') return 'llama-instant';
+  if (pid === 'electronhub') return 'gemma-4-uncensored:free';
+  if (pid === 'chutes') return 'Qwen/Qwen3.8-27B-TEE';
+  if (pid === 'aionlabs') return 'aion-labs/aion-2.0';
   return 'default';
 }
 
@@ -267,14 +398,58 @@ export function sanitizeChatMessages(
 }
 
 /**
- * Extracts assistant text and optional token usage from OpenAI-compatible JSON,
- * Anthropic/Ollama variants, or SSE `data: {...}` streams returned by bridges.
+ * Splits embedded `<think>...</think>` / `<thinking>...</thinking>` blocks from assistant text
+ * and merges them with explicit API reasoning fields (`reasoning_content`, `reasoning`).
+ */
+export function splitThinkingFromText(
+  rawText: string,
+  explicitReasoning?: string
+): { reply: string; thinking?: string } {
+  const thinkParts: string[] = [];
+  if (explicitReasoning && explicitReasoning.trim()) {
+    thinkParts.push(explicitReasoning.trim());
+  }
+  let cleaned = rawText
+    .replace(/<(?:think|thinking)>([\s\S]*?)<\/(?:think|thinking)>/gi, (_m, inner: string) => {
+      if (inner && inner.trim()) thinkParts.push(inner.trim());
+      return '';
+    })
+    .trim();
+
+  // Handle truncated reasoning where the model hit max_tokens before emitting </think>
+  const unclosedMatch = cleaned.match(/<(?:think|thinking)>([\s\S]*)$/i);
+  if (unclosedMatch) {
+    const before = cleaned.slice(0, unclosedMatch.index ?? 0).trim();
+    const partialThink = (unclosedMatch[1] || '').trim();
+    if (partialThink) {
+      thinkParts.push(`${partialThink}\n\n[Abgeschnitten durch Token-Limit]`);
+    }
+    cleaned = before;
+  }
+
+  const mergedThinking = thinkParts.length > 0 ? thinkParts.join('\n\n') : undefined;
+  return {
+    reply:
+      cleaned ||
+      (unclosedMatch
+        ? 'Der Gedankengang wurde durch das Token-Limit abgeschnitten (oben ausklappbar). Erhöhe „Max Antwort-Tokens“ oder stelle Thinking auf „Aus“.'
+        : mergedThinking
+          ? ''
+          : rawText.trim()),
+    thinking: mergedThinking,
+  };
+}
+
+/**
+ * Extracts assistant text, optional thinking/reasoning trace, and token usage from
+ * OpenAI-compatible JSON, Anthropic/Ollama variants, or SSE `data: {...}` streams.
  */
 export function extractChatCompletionReply(
   parsedJson: unknown,
   rawText: string
 ): {
   reply: string | null;
+  thinking?: string;
   model?: string;
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   errorMessage?: string;
@@ -309,8 +484,21 @@ export function extractChatCompletionReply(
       const first = obj.choices[0] as Record<string, unknown>;
       const msg = first.message as Record<string, unknown> | undefined;
       if (msg) {
+        const explicitReasoning =
+          typeof msg.reasoning_content === 'string' && msg.reasoning_content.trim().length > 0
+            ? msg.reasoning_content.trim()
+            : typeof msg.reasoning === 'string' && msg.reasoning.trim().length > 0
+              ? msg.reasoning.trim()
+              : undefined;
+
         if (typeof msg.content === 'string' && msg.content.length > 0) {
-          return { reply: msg.content, model, usage };
+          const split = splitThinkingFromText(msg.content, explicitReasoning);
+          return {
+            reply: split.reply || msg.content,
+            thinking: split.thinking,
+            model,
+            usage,
+          };
         }
         if (Array.isArray(msg.content)) {
           const joined = msg.content
@@ -322,49 +510,72 @@ export function extractChatCompletionReply(
               return '';
             })
             .join('');
-          if (joined) return { reply: joined, model, usage };
+          if (joined) {
+            const split = splitThinkingFromText(joined, explicitReasoning);
+            return { reply: split.reply || joined, thinking: split.thinking, model, usage };
+          }
         }
-        if (typeof msg.reasoning_content === 'string' && msg.reasoning_content.length > 0) {
-          return { reply: msg.reasoning_content, model, usage };
+        if (explicitReasoning) {
+          return { reply: explicitReasoning, thinking: explicitReasoning, model, usage };
         }
       }
       if (typeof first.text === 'string' && first.text.length > 0) {
-        return { reply: first.text, model, usage };
+        const split = splitThinkingFromText(first.text);
+        return { reply: split.reply || first.text, thinking: split.thinking, model, usage };
       }
     }
 
-    // Ollama native /api/chat shape: { message: { content } }
+    // Ollama native /api/chat shape: { message: { content, thinking } }
     if (obj.message && typeof obj.message === 'object') {
-      const mc = (obj.message as Record<string, unknown>).content;
+      const msgObj = obj.message as Record<string, unknown>;
+      const mc = msgObj.content;
+      const mt =
+        typeof msgObj.thinking === 'string'
+          ? msgObj.thinking
+          : typeof msgObj.reasoning_content === 'string'
+            ? msgObj.reasoning_content
+            : undefined;
       if (typeof mc === 'string' && mc.length > 0) {
-        return { reply: mc, model, usage };
+        const split = splitThinkingFromText(mc, mt);
+        return { reply: split.reply || mc, thinking: split.thinking, model, usage };
       }
     }
 
-    // Anthropic Messages shape: { content: [{ type: 'text', text }] }
+    // Anthropic Messages shape: { content: [{ type: 'thinking' | 'text', text, thinking }] }
     if (Array.isArray(obj.content)) {
-      const joined = obj.content
-        .map((c) =>
-          c && typeof c === 'object' && typeof (c as { text?: unknown }).text === 'string'
-            ? (c as { text: string }).text
-            : ''
-        )
-        .join('');
-      if (joined) return { reply: joined, model, usage };
+      const thinkChunks: string[] = [];
+      const textChunks: string[] = [];
+      for (const c of obj.content) {
+        if (!c || typeof c !== 'object') continue;
+        const rec = c as Record<string, unknown>;
+        if (rec.type === 'thinking' && typeof rec.thinking === 'string') {
+          thinkChunks.push(rec.thinking);
+        } else if (typeof rec.text === 'string') {
+          textChunks.push(rec.text);
+        }
+      }
+      const joined = textChunks.join('');
+      if (joined) {
+        const split = splitThinkingFromText(joined, thinkChunks.join('\n\n'));
+        return { reply: split.reply || joined, thinking: split.thinking, model, usage };
+      }
     }
 
     // Generic fallback fields used by some lightweight bridges
     if (typeof obj.response === 'string' && obj.response.length > 0) {
-      return { reply: obj.response, model, usage };
+      const split = splitThinkingFromText(obj.response);
+      return { reply: split.reply || obj.response, thinking: split.thinking, model, usage };
     }
     if (typeof obj.reply === 'string' && obj.reply.length > 0) {
-      return { reply: obj.reply, model, usage };
+      const split = splitThinkingFromText(obj.reply);
+      return { reply: split.reply || obj.reply, thinking: split.thinking, model, usage };
     }
   }
 
   // Fallback for bridges that force SSE (`data: {...}`) even when stream: false
   if (rawText && rawText.includes('data:')) {
     const chunks: string[] = [];
+    const reasoningChunks: string[] = [];
     let sseModel: string | undefined;
     for (const line of rawText.split(/\r?\n/)) {
       const trimmed = line.trim();
@@ -377,8 +588,15 @@ export function extractChatCompletionReply(
         if (Array.isArray(parsed.choices) && parsed.choices.length > 0) {
           const ch = parsed.choices[0] as Record<string, unknown>;
           const delta = ch.delta as Record<string, unknown> | undefined;
-          if (delta && typeof delta.content === 'string') {
-            chunks.push(delta.content);
+          if (delta) {
+            if (typeof delta.reasoning_content === 'string') {
+              reasoningChunks.push(delta.reasoning_content);
+            } else if (typeof delta.reasoning === 'string') {
+              reasoningChunks.push(delta.reasoning);
+            }
+            if (typeof delta.content === 'string') {
+              chunks.push(delta.content);
+            }
           } else if (ch.message && typeof (ch.message as Record<string, unknown>).content === 'string') {
             chunks.push((ch.message as Record<string, unknown>).content as string);
           }
@@ -387,8 +605,15 @@ export function extractChatCompletionReply(
         // ignore malformed SSE line
       }
     }
-    if (chunks.length > 0) {
-      return { reply: chunks.join(''), model: sseModel };
+    if (chunks.length > 0 || reasoningChunks.length > 0) {
+      const joined = chunks.join('');
+      const joinedReason = reasoningChunks.join('');
+      const split = splitThinkingFromText(joined || joinedReason, joined ? joinedReason : undefined);
+      return {
+        reply: split.reply || joined || joinedReason,
+        thinking: split.thinking,
+        model: sseModel,
+      };
     }
   }
 

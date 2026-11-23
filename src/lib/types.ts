@@ -60,6 +60,7 @@ export interface ClassifiedProvider extends ProviderRecord {
   testPolicy: TestEligibility;
   expectedEnvVar: string | null;
   rule7Collision: string | null;
+  isUnfiltered: boolean;
 }
 
 export type TestRunStatus =

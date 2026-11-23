@@ -5,6 +5,12 @@ import path from 'node:path';
 import test from 'node:test';
 import { consolidateBridges } from './bridgeSelector.ts';
 import { buildInitialTestResults, classifyAllProviders } from './classifier.ts';
+import {
+  readSafeWorkspaceFile,
+  resolveSafeWorkspacePath,
+  scanSafeWorkspaceTree,
+  writeSafeCodingSandboxFile,
+} from './codingWorkspace.ts';
 import { parseProviderMarkdown } from './parser.ts';
 import { generateAllSuiteFiles } from './suiteGenerator.ts';
 
@@ -26,8 +32,8 @@ const { files, auditChecks } = generateAllSuiteFiles(
   'ai_provider(2).txt'
 );
 
-test('ZIEL 1: parses all 353 provider blocks from ai_provider(2).txt cleanly', () => {
-  assert.equal(parsed.length, 353, `Expected 353 blocks, got ${parsed.length}`);
+test('ZIEL 1: parses all 368 provider blocks from ai_provider(2).txt cleanly', () => {
+  assert.equal(parsed.length, 368, `Expected 368 blocks, got ${parsed.length}`);
   assert.ok(parsed.every((p) => p.id.length > 0 && p.name.length > 0));
   assert.ok(
     parsed.every((p) => !p.verbindungsart.includes('**protokoll:**')),
@@ -262,11 +268,13 @@ import {
   resolveVenvPythonPath,
 } from './bridgeRunner.ts';
 import {
+  BRIDGE_VERIFIED_MODELS,
   DUCK2API_MODELS,
   categorizeModelIds,
   extractChatCompletionReply,
   extractModelIds,
   resolveDefaultChatModel,
+  resolveVerifiedBridgeModelOptions,
   sanitizeChatMessages,
   validateChatTarget,
 } from './chatEngine.ts';
@@ -274,6 +282,7 @@ import {
   buildConnectionSnippets,
   classifyConnectionKind,
   normalizeEnvVarName,
+  resolveProviderApiKeyPage,
 } from './testEngine.ts';
 
 test('Connection snippets fix PowerShell curl alias, double _API_API_KEY, and non-REST WebNN 404', () => {
@@ -742,10 +751,14 @@ test('ChatEngine: default models, OVH/Pollinations non-chat model filtering, and
   assert.equal(resolveDefaultChatModel(undefined, 'duck2api'), 'gpt-5.4-mini');
   assert.equal(resolveDefaultChatModel(undefined, 'freedeepseekapi'), 'deepseek-chat');
   assert.equal(resolveDefaultChatModel(undefined, 'openai-api-server-via-codex'), 'gpt-5.4-mini');
-  assert.equal(resolveDefaultChatModel(undefined, 'catgpt-gateway'), 'gpt-4o');
-  assert.equal(resolveDefaultChatModel(undefined, 'webai-to-api'), 'gemini-2.5-flash');
+  assert.equal(resolveDefaultChatModel(undefined, 'catgpt-gateway'), 'claude-browser');
+  assert.equal(resolveDefaultChatModel(undefined, 'webai-to-api'), 'gemini-3-flash');
+  assert.equal(resolveDefaultChatModel(undefined, 'qwengate'), 'qwen3.7-plus');
   assert.ok(DUCK2API_MODELS.includes('gpt-5.4-mini'));
-  assert.ok(DUCK2API_MODELS.includes('claude-haiku-4-5'));
+  assert.ok(DUCK2API_MODELS.includes('claude-haiku-5-5'));
+  assert.ok(DUCK2API_MODELS.includes('mistral-small-2603'));
+  assert.ok(DUCK2API_MODELS.includes('tinfoil/gemma4-31b'));
+  assert.ok(!DUCK2API_MODELS.includes('claude-opus-5-5'));
 
   const ovhModelsPayload = {
     object: 'list',
@@ -865,7 +878,7 @@ test('BridgeRunner detects native entrypoints, Python venv/pip/patchright & vers
   }
 });
 
-test('Newly verified OpenAI-compatible REST APIs (9 GELB + venice-ai) resolve cleanly and pass SSRF/chat guards', () => {
+test('Newly verified OpenAI-compatible REST APIs (23 GELB + venice-ai) resolve cleanly and pass SSRF/chat guards', () => {
   const expectedApis: Array<{ id: string; baseUrl: string; defaultModel?: string }> = [
     { id: 'unrestrictable-ai', baseUrl: 'https://unrestrictable.ai/v1', defaultModel: 'abliterated-model' },
     { id: 'obscurify-ai', baseUrl: 'https://obscurify.ai/v1', defaultModel: 'abliteration-ai/abliterated-model' },
@@ -876,12 +889,27 @@ test('Newly verified OpenAI-compatible REST APIs (9 GELB + venice-ai) resolve cl
     { id: 'infernus-ai', baseUrl: 'https://infernus.ai/v1' },
     { id: 'cleus-ai', baseUrl: 'https://cleus.ai/api/v1' },
     { id: 'ablit-app', baseUrl: 'https://ablit.app/api/v1' },
+    { id: 'abliteration-ai', baseUrl: 'https://api.abliteration.ai/v1' },
+    { id: 'openuncensored', baseUrl: 'https://api.openuncensored.com/v1', defaultModel: 'abliterated-model' },
+    { id: 'magmarouter', baseUrl: 'https://api.magmarouter.com/v1', defaultModel: 'glm-5.3-xploded' },
+    { id: 'mancer-ai', baseUrl: 'https://neuro.mancer.tech/oai/v1', defaultModel: 'mythomax' },
+    { id: 'infermatic-ai', baseUrl: 'https://api.infermatic.ai/v1' },
+    { id: 'arli-ai', baseUrl: 'https://api.arliai.com/v1' },
+    { id: 'redpill-ai', baseUrl: 'https://api.redpill.ai/v1', defaultModel: 'phala/deepseek-v4.1-flash-1017-uncensored' },
+    { id: 'ppq-ai', baseUrl: 'https://api.ppq.ai/v1' },
+    { id: 'akashml', baseUrl: 'https://api.akashml.com/v1' },
+    { id: 'nous-research', baseUrl: 'https://inference-api.nousresearch.com/v1' },
+    { id: 'tinfoil-sh', baseUrl: 'https://inference.tinfoil.sh/v1', defaultModel: 'deepseek-v4-1-flash' },
+    { id: 'notrack-ai', baseUrl: 'https://notrack.ai/v1' },
+    { id: 'gab-ai', baseUrl: 'https://gab.ai/v1', defaultModel: 'auto' },
+    { id: 'unfilteredaimodels', baseUrl: 'https://api.unfilteredaimodels.com/v1' },
   ];
 
   for (const spec of expectedApis) {
     const prov = classified.find((p) => p.id === spec.id);
     assert.ok(prov, `${spec.id} must exist in catalog`);
     assert.equal(prov.securityClass, 'GELB', `${spec.id} must be classified as GELB`);
+    assert.equal(prov.isUnfiltered, true, `${spec.id} must be tagged isUnfiltered=true`);
     assert.equal(isUsableGreenOrGelb(prov), true, `${spec.id} must be usable`);
     assert.equal(classifyConnectionKind(prov).supportsOpenAiEndpoints, true, `${spec.id} must support OpenAI endpoints`);
     const snips = buildConnectionSnippets(prov);
@@ -904,16 +932,435 @@ test('Newly verified OpenAI-compatible REST APIs (9 GELB + venice-ai) resolve cl
 
   const venice = classified.find((p) => p.id === 'venice-ai');
   assert.ok(venice, 'venice-ai must exist in catalog');
+  assert.equal(venice.isUnfiltered, true, 'venice-ai must be tagged isUnfiltered=true');
   assert.equal(isUsableGreenOrGelb(venice), true);
   assert.equal(buildConnectionSnippets(venice).defaultApiBase, 'https://api.venice.ai/api/v1');
   assert.equal(validateInvokeTarget(venice, 'https://api.venice.ai/api/v1/models').ok, true);
+
+  // SCHWARZ / illegal entries must never be marked as usable unfiltered options
+  const schwarzItems = classified.filter((p) => p.securityClass === 'SCHWARZ');
+  assert.ok(schwarzItems.length > 0);
+  assert.ok(schwarzItems.every((p) => !p.isUnfiltered), 'SCHWARZ entries must never have isUnfiltered=true');
+
+  const clsJson = JSON.parse(files.find((f) => f.path === 'classification.json')!.content) as {
+    providers: Array<{ id: string; is_unfiltered?: boolean }>;
+  };
+  assert.equal(clsJson.providers.find((p) => p.id === 'openuncensored')?.is_unfiltered, true);
 
   const html = files.find((f) => f.path === 'gui/index.html')!;
   assert.ok(html.content.includes('https://api.venice.ai/api/v1'));
   assert.ok(html.content.includes('abliterated-model'));
   assert.ok(html.content.includes('abliteration-ai/abliterated-model'));
+  assert.ok(html.content.includes('glm-5.3-xploded'));
+  assert.ok(html.content.includes('mythomax'));
+  assert.ok(html.content.includes('cls-unfiltered'));
+  assert.ok(html.content.includes('chat-only-unfiltered'));
+  assert.ok(html.content.includes('BRIDGE_VERIFIED_MODELS'));
+  assert.ok(html.content.includes('chat-bridge-model'));
 });
 
+test('All 7 allowlisted bridges have exclusive verified active model dropdown lists without legacy/paid/default aliases', () => {
+  const allowlisted = getAllowlistedBridgeRepos(selections);
+  assert.equal(allowlisted.length, 7);
 
+  const forbidden = new Set([
+    'default',
+    'deepseek-v3',
+    'deepseek-r1',
+    'deepseek-expert',
+    'deepseek-v4-pro',
+    'deepseek-vision',
+    'claude-haiku-4-5',
+    'gpt-5.4-nano',
+    'mistral-small',
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
+    'gpt-4o',
+    'gemini-2.5-flash',
+  ]);
+
+  for (const repo of allowlisted) {
+    const models = BRIDGE_VERIFIED_MODELS[repo.bridgeId];
+    assert.ok(Array.isArray(models) && models.length >= 2, `${repo.bridgeId} must have >= 2 verified models`);
+    for (const m of models) {
+      assert.ok(!forbidden.has(m.id), `${repo.bridgeId} must not include forbidden/legacy model ${m.id}`);
+    }
+    assert.equal(
+      resolveDefaultChatModel(undefined, repo.bridgeId),
+      models[0].id,
+      `${repo.bridgeId} default model must equal first verified model`
+    );
+  }
+
+  // Live filtering must strip "default", legacy DeepSeek aliases, and paid-only Duck.ai models
+  const filteredDuck = resolveVerifiedBridgeModelOptions('duck2api', [
+    'default',
+    'gpt-5.4-mini',
+    'claude-opus-5-5',
+    'claude-haiku-5-5',
+    'mistral-small',
+  ]);
+  assert.deepEqual(
+    filteredDuck.map((m) => m.id),
+    ['gpt-5.4-mini', 'claude-haiku-5-5']
+  );
+
+  const filteredDs = resolveVerifiedBridgeModelOptions('freedeepseekapi', [
+    'deepseek-chat',
+    'deepseek-v3',
+    'deepseek-r1',
+    'deepseek-reasoner',
+  ]);
+  assert.deepEqual(
+    filteredDs.map((m) => m.id),
+    ['deepseek-chat', 'deepseek-reasoner']
+  );
+});
+
+test('Chutes & AION Labs resolve real OpenAI /v1 hosts (no HTML marketing page) and API-Key page resolver covers key-requiring providers safely', () => {
+  const chutes = classified.find((p) => p.id === 'chutes')!;
+  assert.ok(chutes, 'chutes must exist');
+  assert.equal(buildConnectionSnippets(chutes).defaultApiBase, 'https://llm.chutes.ai/v1');
+  assert.equal(validateInvokeTarget(chutes, 'https://llm.chutes.ai/v1/chat/completions').ok, true);
+  assert.equal(resolveDefaultChatModel('chutes'), 'Qwen/Qwen3.8-27B-TEE');
+  const chutesKeyPage = resolveProviderApiKeyPage(chutes);
+  assert.equal(chutesKeyPage?.url, 'https://chutes.ai/app/settings/api-keys');
+  assert.equal(chutesKeyPage?.isDirectKeyConsole, true);
+
+  const aion = classified.find((p) => p.id === 'aionlabs')!;
+  assert.ok(aion, 'aionlabs must exist');
+  assert.equal(buildConnectionSnippets(aion).defaultApiBase, 'https://api.aionlabs.ai/v1');
+  assert.equal(validateInvokeTarget(aion, 'https://api.aionlabs.ai/v1/models').ok, true);
+  assert.equal(resolveDefaultChatModel('aionlabs'), 'aion-labs/aion-2.0');
+
+  const groq = classified.find((p) => p.id.includes('groq') && p.securityClass === 'GRUEN')!;
+  assert.ok(groq, 'a GRÜN groq provider must exist');
+  assert.equal(resolveProviderApiKeyPage(groq)?.url, 'https://console.groq.com/keys');
+
+  const ovh = classified.find((p) => p.id === 'ovh-ai-endpoints')!;
+  assert.equal(resolveProviderApiKeyPage(ovh), null, 'Keyless providers (auth_typ=keine) must not show API-Key button');
+
+  const schwarz = classified.find((p) => p.securityClass === 'SCHWARZ')!;
+  assert.equal(resolveProviderApiKeyPage(schwarz), null, 'SCHWARZ entries must never expose external API-Key links');
+
+  const html = files.find((f) => f.path === 'gui/index.html')!;
+  assert.ok(html.content.includes('https://llm.chutes.ai/v1'));
+  assert.ok(html.content.includes('https://chutes.ai/app/settings/api-keys'));
+  assert.ok(html.content.includes('resolveApiKeyPage'));
+});
+
+test('Ablit default model fix + live-verified UplinkSwitch, Api.Airforce, and ElectronHub unfiltered mappings', () => {
+  assert.equal(resolveDefaultChatModel('ablit-app'), 'ablit-flash');
+  assert.equal(resolveDefaultChatModel('abliteration-ai'), 'abliterated-model');
+  assert.equal(resolveDefaultChatModel('uplinkswitch'), 'abliterated-model');
+  assert.equal(resolveDefaultChatModel('api-airforce'), 'llama-instant');
+  assert.equal(resolveDefaultChatModel('electronhub'), 'gemma-4-uncensored:free');
+
+  for (const spec of [
+    { id: 'uplinkswitch', base: 'https://api.uplinkswitch.com/v1' },
+    { id: 'api-airforce', base: 'https://api.airforce/v1' },
+    { id: 'electronhub', base: 'https://api.electronhub.ai/v1' },
+  ]) {
+    const p = classified.find((x) => x.id === spec.id);
+    assert.ok(p, `${spec.id} must exist in catalog`);
+    assert.equal(p!.isUnfiltered, true, `${spec.id} must be flagged isUnfiltered`);
+    assert.equal(buildConnectionSnippets(p!).defaultApiBase, spec.base);
+    assert.ok(resolveProviderApiKeyPage(p!)?.url.startsWith('https://'));
+  }
+
+  const html = files.find((f) => f.path === 'gui/index.html')!;
+  assert.ok(html.content.includes("'ablit-flash'"));
+  assert.ok(html.content.includes('https://api.uplinkswitch.com/v1'));
+});
+
+test('extractChatCompletionReply cleanly extracts thinking traces from reasoning, reasoning_content, <think> tags, and SSE', () => {
+  const ovhStyle = extractChatCompletionReply(
+    {
+      model: 'gpt-oss-20b',
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: 'OK',
+            reasoning: 'User requested OK only.',
+          },
+        },
+      ],
+    },
+    ''
+  );
+  assert.equal(ovhStyle.reply, 'OK');
+  assert.equal(ovhStyle.thinking, 'User requested OK only.');
+
+  const tagStyle = extractChatCompletionReply(
+    {
+      model: 'qwen-thinking',
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: '<think>Step 1: check edge cases.</think>\nFinal answer: 42',
+          },
+        },
+      ],
+    },
+    ''
+  );
+  assert.equal(tagStyle.reply, 'Final answer: 42');
+  assert.equal(tagStyle.thinking, 'Step 1: check edge cases.');
+
+  const sseReason = extractChatCompletionReply(
+    null,
+    'data: {"choices":[{"delta":{"reasoning_content":"Plan A"}}]}\ndata: {"choices":[{"delta":{"content":"Done"}}]}\ndata: [DONE]\n'
+  );
+  assert.equal(sseReason.reply, 'Done');
+  assert.equal(sseReason.thinking, 'Plan A');
+});
+
+test('Coding-Studio workspace helper enforces strict path confinement, blocks secrets/bridges, and restricts writes to coding-workspace/', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'coding-studio-test-'));
+  try {
+    fs.mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(tmpRoot, 'bridges'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRoot, 'src', 'index.ts'), 'export const ok = true;\n', 'utf8');
+    fs.writeFileSync(path.join(tmpRoot, '.env'), 'SECRET=123\n', 'utf8');
+    fs.writeFileSync(path.join(tmpRoot, 'bridges', 'deepseek-auth.json'), '{"cookie":"x"}', 'utf8');
+
+    assert.equal(resolveSafeWorkspacePath(tmpRoot, '../etc/passwd').ok, false);
+    assert.equal(resolveSafeWorkspacePath(tmpRoot, '.env').ok, false);
+    assert.equal(resolveSafeWorkspacePath(tmpRoot, 'bridges/deepseek-auth.json').ok, false);
+    assert.equal(readSafeWorkspaceFile(tmpRoot, '.env').ok, false);
+
+    const tree = scanSafeWorkspaceTree(tmpRoot);
+    assert.equal(tree.ok, true);
+    if (tree.ok) {
+      const names = tree.tree.map((n) => n.name);
+      assert.ok(names.includes('src'));
+      assert.ok(!names.includes('.env'));
+      assert.ok(!names.includes('bridges'));
+    }
+
+    const readOk = readSafeWorkspaceFile(tmpRoot, 'src/index.ts');
+    assert.equal(readOk.ok, true);
+    if (readOk.ok) {
+      assert.equal(readOk.writable, false);
+      assert.equal(readOk.language, 'typescript');
+    }
+
+    const writeOk = writeSafeCodingSandboxFile(tmpRoot, 'demo/hello.ts', 'console.log("hi");\n');
+    assert.equal(writeOk.ok, true);
+    if (writeOk.ok) {
+      assert.equal(writeOk.path, 'coding-workspace/demo/hello.ts');
+      const reread = readSafeWorkspaceFile(tmpRoot, writeOk.path);
+      assert.equal(reread.ok, true);
+      if (reread.ok) {
+        assert.equal(reread.writable, true);
+        assert.equal(reread.content, 'console.log("hi");\n');
+      }
+    }
+
+    assert.equal(writeSafeCodingSandboxFile(tmpRoot, '../escape.ts', 'bad').ok, false);
+    assert.equal(writeSafeCodingSandboxFile(tmpRoot, '.env.local', 'bad').ok, false);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+import {
+  formatMessagesAsChatMl,
+  parseGradioSseOutput,
+  validateCloudTunnelUrl,
+} from './codingProviders.ts';
+import {
+  buildOpenAiToolSchemas,
+  executeCodingTool,
+  extractReActToolCalls,
+} from './codingTools.ts';
+import {
+  buildCloudNotebookIpynb,
+  CODING_TOOL_DEFINITIONS,
+  type CodingToolId,
+} from './codingTypes.ts';
+
+test('CodingProviders: Cloud-GPU tunnel validation enforces strict HTTPS allowlist & blocks SSRF/credentials', () => {
+  const cf = validateCloudTunnelUrl('https://cool-llama-123.trycloudflare.com');
+  assert.equal(cf.ok, true);
+  if (cf.ok) assert.equal(cf.baseUrl, 'https://cool-llama-123.trycloudflare.com/v1');
+
+  const ngrok = validateCloudTunnelUrl('https://demo.ngrok-free.app/v1/');
+  assert.equal(ngrok.ok, true);
+  if (ngrok.ok) assert.equal(ngrok.baseUrl, 'https://demo.ngrok-free.app/v1');
+
+  const local = validateCloudTunnelUrl('http://127.0.0.1:11434/v1');
+  assert.equal(local.ok, true);
+
+  assert.equal(validateCloudTunnelUrl('http://cool-llama.trycloudflare.com/v1').ok, false);
+  assert.equal(validateCloudTunnelUrl('https://169.254.169.254/latest/meta-data').ok, false);
+  assert.equal(validateCloudTunnelUrl('https://192.168.1.50/v1').ok, false);
+  assert.equal(validateCloudTunnelUrl('https://evil.example.com/v1').ok, false);
+  assert.equal(validateCloudTunnelUrl('https://user:pass@cool.trycloudflare.com/v1').ok, false);
+});
+
+test('CodingProviders: Gradio SSE parser handles Muse-Glimmer reasoning, Gemma-4 history, and error events', () => {
+  const museSse = [
+    'event: generating',
+    'data: [{"reasoning":"Plan...","content":""}]',
+    'event: complete',
+    'data: [{"reasoning":"Step 1: add a+b.","content":"def add(a, b):\\n    return a + b","stats":{"tok_per_sec":25.4}}]',
+  ].join('\n');
+  const museParsed = parseGradioSseOutput(museSse);
+  assert.equal(museParsed.ok, true);
+  assert.equal(museParsed.thinking, 'Step 1: add a+b.');
+  assert.ok(museParsed.reply?.includes('def add(a, b):'));
+  assert.equal(museParsed.stats?.tok_per_sec, 25.4);
+
+  const gemmaSse = [
+    'event: complete',
+    'data: [[{"role":"user","content":[{"text":"hi"}]},{"role":"assistant","metadata":{"title":"Thinking"},"content":[{"text":"Check types"}]},{"role":"assistant","metadata":null,"content":[{"text":"const x = 1;"}]}]]',
+  ].join('\n');
+  const gemmaParsed = parseGradioSseOutput(gemmaSse);
+  assert.equal(gemmaParsed.ok, true);
+  assert.equal(gemmaParsed.thinking, 'Check types');
+  assert.equal(gemmaParsed.reply, 'const x = 1;');
+
+  const errSse = 'event: error\ndata: {"error":"ZeroGPU quota exceeded"}\n';
+  const errParsed = parseGradioSseOutput(errSse);
+  assert.equal(errParsed.ok, false);
+  assert.ok(errParsed.error?.includes('ZeroGPU quota'));
+
+  const chatMl = formatMessagesAsChatMl([
+    { role: 'system', content: 'Sys' },
+    { role: 'user', content: 'Hi' },
+  ]);
+  assert.ok(chatMl.includes('<|im_start|>system\nSys<|im_end|>'));
+  assert.ok(chatMl.endsWith('<|im_start|>assistant\n'));
+});
+
+test('CodingTools & Cloud Notebook Generator: sandboxed tool execution, ReAct extraction, and valid .ipynb output', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'coding-tools-test-'));
+  try {
+    fs.mkdirSync(path.join(tmpRoot, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRoot, 'src', 'math.ts'), 'export function sum(a: number, b: number) { return a + b; }\n', 'utf8');
+    fs.writeFileSync(path.join(tmpRoot, '.env'), 'API_SECRET=topsecret\n', 'utf8');
+
+    const allEnabled = new Set<CodingToolId>(CODING_TOOL_DEFINITIONS.map((t) => t.id));
+    assert.equal(buildOpenAiToolSchemas(allEnabled).length, 5);
+
+    const ctx = { rootDir: tmpRoot, activeProject: null, enabledTools: allEnabled };
+
+    const listRes = executeCodingTool('list_workspace_files', { dir: '' }, ctx);
+    assert.equal(listRes.event.ok, true);
+    assert.ok(listRes.outputText.includes('src/'));
+    assert.ok(!listRes.outputText.includes('.env'));
+
+    const searchRes = executeCodingTool('search_workspace', { query: 'function sum' }, ctx);
+    assert.equal(searchRes.event.ok, true);
+    assert.ok(searchRes.outputText.includes('src/math.ts'));
+
+    const secretRead = executeCodingTool('read_workspace_file', { path: '.env' }, ctx);
+    assert.equal(secretRead.event.ok, false);
+
+    const writeRes = executeCodingTool(
+      'write_sandbox_file',
+      { path: 'generated/test.ts', content: 'export const ok = 42;\n' },
+      ctx
+    );
+    assert.equal(writeRes.event.ok, true);
+    assert.equal(writeRes.writtenFilePath, 'coding-workspace/generated/test.ts');
+
+    // Disabled tool must be blocked
+    const disabledCtx = { rootDir: tmpRoot, activeProject: null, enabledTools: new Set<CodingToolId>(['list_workspace_files']) };
+    const blockedWrite = executeCodingTool('write_sandbox_file', { path: 'x.ts', content: 'no' }, disabledCtx);
+    assert.equal(blockedWrite.event.ok, false);
+
+    const calls = extractReActToolCalls(
+      'Ich prüfe erst die Datei.\n<tool_call>{"name":"read_workspace_file","arguments":{"path":"src/math.ts"}}</tool_call>'
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].name, 'read_workspace_file');
+    assert.equal(calls[0].arguments.path, 'src/math.ts');
+
+    const ipynbRaw = buildCloudNotebookIpynb('kaggle', 'huihui_ai/qwen3-coder-abliterated');
+    const ipynb = JSON.parse(ipynbRaw) as { nbformat: number; cells: Array<{ source: string[] }> };
+    assert.equal(ipynb.nbformat, 4);
+    assert.ok(ipynb.cells[1].source.join('').includes('ollama pull huihui_ai/qwen3-coder-abliterated'));
+    assert.ok(ipynb.cells[1].source.join('').includes('trycloudflare'));
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+import { splitThinkingFromText } from './chatEngine.ts';
+import { isLikelyTruncatedOutput } from './codingProviders.ts';
+import { shouldOfferReActTools } from './codingTools.ts';
+import { extractCodeBlocksWithPaths } from './codingTypes.ts';
+
+test('splitThinkingFromText separates closed and unclosed <think> blocks cleanly', () => {
+  const closed = splitThinkingFromText('<think>Plan A</think>\nconst x = 1;');
+  assert.equal(closed.thinking, 'Plan A');
+  assert.equal(closed.reply, 'const x = 1;');
+
+  const unclosed = splitThinkingFromText('<think>Analyse ohne Schluss-Tag...');
+  assert.ok(unclosed.thinking?.includes('Analyse ohne Schluss-Tag...'));
+  assert.ok(unclosed.thinking?.includes('Token-Limit'));
+  assert.ok(!unclosed.reply.includes('<think>'));
+});
+
+test('Gradio null-error text & ReAct casual-greeting guard prevent wasted AI Horde tool rounds', () => {
+  const nullErr = parseGradioSseOutput('event: error\ndata: {"error": null}\n');
+  assert.equal(nullErr.ok, false);
+  assert.ok(nullErr.error?.includes('internen Serverfehler'));
+  assert.ok(!nullErr.error?.startsWith('{"error":null}'));
+
+  assert.equal(shouldOfferReActTools('hi'), false);
+  assert.equal(shouldOfferReActTools('jo'), false);
+  assert.equal(shouldOfferReActTools('i'), false);
+  assert.equal(shouldOfferReActTools('hallo!'), false);
+  assert.equal(shouldOfferReActTools('Lies bitte src/App.tsx'), true);
+  assert.equal(shouldOfferReActTools('Schreibe eine Funktion clamp in coding-workspace/math.ts'), true);
+});
+
+test('isLikelyTruncatedOutput and extractCodeBlocksWithPaths handle AI Horde cutoffs & sandbox files', () => {
+  // Unclosed code fence -> truncated
+  assert.equal(isLikelyTruncatedOutput('Hier ist Code:\n```python\ndef check_port(self, ip,', 512), true);
+  // Short finished reply -> NOT truncated
+  assert.equal(isLikelyTruncatedOutput('Hallo! Wie kann ich dir helfen?', 512), false);
+  // Closed code block -> NOT truncated
+  assert.equal(isLikelyTruncatedOutput('Fertig:\n```ts\nexport const x = 1;\n```', 512), false);
+  // Mid-word cutoff near token budget -> truncated
+  assert.equal(isLikelyTruncatedOutput(`${'a '.repeat(260)}Möchtest du die vollst`, 128), true);
+
+  // Extract multiple code blocks with inferred safe coding-workspace/ paths (and ignore single/double-dash ASCII trees & ../)
+  const md = [
+    '```code',
+    'my_app/',
+    '├─ src/',
+    '└─ README.md',
+    '```',
+    '',
+    '### 2.1 backend/package.json',
+    '```json',
+    '{"name":"demo"}',
+    '```',
+    '',
+    '```python:../escape.py',
+    '# sandbox/demo.py',
+    'print("ok")',
+    '```',
+    '',
+    '### 2.3 backend/src/routes/tutorials.ts',
+    '```ts',
+    'export const partial = true;',
+  ].join('\n');
+
+  const extracted = extractCodeBlocksWithPaths(md);
+  assert.equal(extracted.length, 3);
+  assert.equal(extracted[0].path, 'coding-workspace/backend/package.json');
+  assert.equal(extracted[0].fenceIndex, 1);
+  assert.equal(extracted[1].path, 'coding-workspace/sandbox/demo.py');
+  assert.equal(extracted[1].fenceIndex, 2);
+  assert.equal(extracted[2].path, 'coding-workspace/backend/src/routes/tutorials.ts');
+  assert.equal(extracted[2].fenceIndex, 3);
+});
 
 

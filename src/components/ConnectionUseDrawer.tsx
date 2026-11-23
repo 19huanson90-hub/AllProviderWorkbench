@@ -15,9 +15,13 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { buildConnectionSnippets, isUsableGreenOrGelb } from '../lib/testEngine.ts';
+import {
+  buildConnectionSnippets,
+  isUsableGreenOrGelb,
+  resolveProviderApiKeyPage,
+} from '../lib/testEngine.ts';
 import type { ClassifiedProvider, TestResultRow } from '../lib/types.ts';
-import { ReadinessLabel, SecurityClassTag, TestStatusTag } from './SecurityIndicator.tsx';
+import { ReadinessLabel, SecurityClassTag, TestStatusTag, UnfilteredTag } from './SecurityIndicator.tsx';
 
 interface ConnectionUseDrawerProps {
   provider: ClassifiedProvider | null;
@@ -153,6 +157,7 @@ export function ConnectionUseDrawer({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2.5">
               <SecurityClassTag secClass={provider.securityClass} />
+              {provider.isUnfiltered && <UnfilteredTag />}
               <span className="font-mono text-xs text-slate-500">{provider.id}</span>
               {testRow?.healthScore !== undefined && testRow.executed && (
                 <span className="font-mono text-xs font-semibold text-slate-800 tabular-nums">
@@ -243,11 +248,28 @@ export function ConnectionUseDrawer({
                   : '4-Phasen-Einzeltest'}
             </button>
 
+            {(() => {
+              const keyPage = resolveProviderApiKeyPage(provider);
+              return keyPage ? (
+                <a
+                  href={keyPage.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={keyPage.url}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900 transition-colors hover:bg-amber-100"
+                >
+                  <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                  API-Key holen
+                  <ExternalLink className="h-3.5 w-3.5 opacity-75" aria-hidden="true" />
+                </a>
+              ) : null;
+            })()}
+
             {provider.url && /^https?:\/\//i.test(provider.url) && (
               <a
                 href={provider.url}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
                 className={`inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors ${
                   snippets.supportsOpenAiEndpoints
                     ? 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
@@ -375,13 +397,29 @@ export function ConnectionUseDrawer({
                   </div>
 
                   <div>
-                    <label
-                      htmlFor="conn-byok-key"
-                      className="flex items-center gap-1 text-xs font-medium text-slate-700"
-                    >
-                      <KeyRound className="h-3 w-3 text-slate-500" aria-hidden="true" />
-                      Session-API-Key (optional, RAM-only)
-                    </label>
+                    <div className="flex items-center justify-between gap-2">
+                      <label
+                        htmlFor="conn-byok-key"
+                        className="flex items-center gap-1 text-xs font-medium text-slate-700"
+                      >
+                        <KeyRound className="h-3 w-3 text-slate-500" aria-hidden="true" />
+                        Session-API-Key (RAM-only)
+                      </label>
+                      {(() => {
+                        const keyPage = resolveProviderApiKeyPage(provider);
+                        return keyPage ? (
+                          <a
+                            href={keyPage.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold text-amber-800 hover:underline"
+                          >
+                            API-Key holen
+                            <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
+                          </a>
+                        ) : null;
+                      })()}
+                    </div>
                     <input
                       id="conn-byok-key"
                       type="password"

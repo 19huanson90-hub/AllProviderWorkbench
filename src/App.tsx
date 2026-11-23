@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
 import {
+  Code2,
   Download,
   FileArchive,
   FlaskConical,
@@ -16,13 +17,14 @@ import { useEffect, useRef, useState } from 'react';
 import { BridgeConsolidationView } from './components/BridgeConsolidationView.tsx';
 import { ChatWorkbenchView, type ChatTargetPreset } from './components/ChatWorkbenchView.tsx';
 import { ClassificationView } from './components/ClassificationView.tsx';
+import { CodingStudioView } from './components/CodingStudioView.tsx';
 import { ConnectionUseDrawer } from './components/ConnectionUseDrawer.tsx';
 import { LiveTestView, type BatchTestMode } from './components/LiveTestView.tsx';
 import { OverviewView } from './components/OverviewView.tsx';
 import { SuiteExportView } from './components/SuiteExportView.tsx';
 import type { ClassifiedProvider, SecurityClass, WorkspacePayload } from './lib/types.ts';
 
-type NavTab = 'overview' | 'classification' | 'tests' | 'bridges' | 'chat' | 'export';
+type NavTab = 'overview' | 'classification' | 'tests' | 'bridges' | 'chat' | 'coding' | 'export';
 
 const NAV_ITEMS: Array<{ id: NavTab; label: string; shortGoal: string; icon: typeof LayoutDashboard }> = [
   { id: 'overview', label: 'Übersicht & Audit', shortGoal: 'Regeln', icon: LayoutDashboard },
@@ -30,6 +32,7 @@ const NAV_ITEMS: Array<{ id: NavTab; label: string; shortGoal: string; icon: typ
   { id: 'tests', label: 'Live-Tests (ToS)', shortGoal: 'Ziel 2', icon: FlaskConical },
   { id: 'bridges', label: 'Bridge-Auswahl', shortGoal: 'Ziel 3', icon: GitMerge },
   { id: 'chat', label: 'Chat-Fenster', shortGoal: 'Direkt', icon: MessageSquare },
+  { id: 'coding', label: 'Coding-Studio', shortGoal: 'IDE · Chat', icon: Code2 },
   { id: 'export', label: 'Suite-Export', shortGoal: 'Ziel 4–5', icon: FileArchive },
 ];
 
@@ -655,7 +658,13 @@ export default function App() {
           </div>
         </header>
 
-        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+        <main
+          className={
+            activeTab === 'coding'
+              ? 'mx-auto max-w-[1680px] px-3 py-4 sm:px-4'
+              : 'mx-auto max-w-7xl px-4 py-6 sm:px-6'
+          }
+        >
           {errorMsg && (
             <div
               role="alert"
@@ -757,6 +766,17 @@ export default function App() {
                   bridgeRuntimes={workspace.bridgeRuntimes}
                   executingBridgeId={executingBridgeId}
                   initialTarget={chatPreset}
+                  onExecuteBridge={handleExecuteBridge}
+                  onStopBridge={handleStopBridge}
+                  onProbeBridge={handleProbeBridge}
+                />
+              )}
+              {activeTab === 'coding' && (
+                <CodingStudioView
+                  providers={workspace.providers}
+                  bridgeSelections={workspace.bridgeSelections}
+                  bridgeRuntimes={workspace.bridgeRuntimes}
+                  executingBridgeId={executingBridgeId}
                   onExecuteBridge={handleExecuteBridge}
                   onStopBridge={handleStopBridge}
                   onProbeBridge={handleProbeBridge}

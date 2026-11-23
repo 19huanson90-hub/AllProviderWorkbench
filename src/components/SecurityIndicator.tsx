@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  Flame,
   Lock,
   ShieldAlert,
   ShieldCheck,
@@ -166,4 +167,19 @@ export function ReadinessLabel({ tier }: { tier?: ReadinessTier }) {
   const item = map[tier];
   return <span className={`font-mono text-[11px] font-medium ${item.cls}`}>{item.text}</span>;
 }
+
+export function UnfilteredTag({ compact = false }: { compact?: boolean }) {
+  return (
+    <span
+      title="Unfiltered / Uncensored / Abliterated oder Privacy-Open-Weight-Anbieter"
+      className={`inline-flex items-center gap-1 rounded-sm border border-fuchsia-300 bg-fuchsia-50 font-mono font-semibold uppercase tracking-wider text-fuchsia-800 ${
+        compact ? 'px-1 py-0.5 text-[9px]' : 'px-1.5 py-0.5 text-[10px]'
+      }`}
+    >
+      <Flame className={compact ? 'h-2.5 w-2.5 shrink-0' : 'h-3 w-3 shrink-0'} aria-hidden="true" />
+      UNFILTERED
+    </span>
+  );
+}
+
 

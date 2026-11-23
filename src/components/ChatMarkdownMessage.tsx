@@ -1,5 +1,6 @@
 import { Check, Copy, ExternalLink, Image as ImageIcon } from 'lucide-react';
 import { Fragment, useState, type ReactNode } from 'react';
+import { extractCodeBlocksWithPaths, isAsciiDirectoryTree } from '../lib/codingTypes.ts';
 import { parseSafeMarkdownBlocks, sanitizeSafeHttpUrl } from '../lib/notebookEngine.ts';
 
 function renderInlineFormatted(text: string): ReactNode[] {
@@ -79,9 +80,21 @@ function renderInlineFormatted(text: string): ReactNode[] {
   return parts;
 }
 
-export function ChatMarkdownMessage({ content }: { content: string }) {
+export function ChatMarkdownMessage({
+  content,
+  onApplyCode,
+  applyCodeLabel,
+}: {
+  content: string;
+  onApplyCode?: (code: string, language: string, suggestedPath?: string) => void;
+  applyCodeLabel?: string;
+}) {
   const [copiedCodeIdx, setCopiedCodeIdx] = useState<number | null>(null);
+  const [appliedCodeIdx, setAppliedCodeIdx] = useState<number | null>(null);
   const blocks = parseSafeMarkdownBlocks(content);
+  const inferredByFenceIndex = new Map(
+    extractCodeBlocksWithPaths(content).map((item) => [item.fenceIndex, item.path])
+  );
 
   const handleCopyCode = async (code: string, idx: number) => {
     try {
@@ -93,9 +106,18 @@ export function ChatMarkdownMessage({ content }: { content: string }) {
     }
   };
 
+  const handleApplyCode = (code: string, language: string, idx: number, suggestedPath?: string) => {
+    if (!onApplyCode) return;
+    onApplyCode(code, language, suggestedPath);
+    setAppliedCodeIdx(idx);
+    setTimeout(() => setAppliedCodeIdx((c) => (c === idx ? null : c)), 1600);
+  };
+
   if (blocks.length === 0) {
     return <div className="whitespace-pre-wrap break-words">{content}</div>;
   }
+
+  let codeFenceCounter = -1;
 
   return (
     <div className="space-y-2.5 text-xs leading-relaxed text-slate-900">
@@ -125,29 +147,60 @@ export function ChatMarkdownMessage({ content }: { content: string }) {
         }
 
         if (block.type === 'code') {
+          codeFenceCounter++;
+          const lang = (block.language || '').toLowerCase();
+          const isTree = isAsciiDirectoryTree(block.code, lang);
+          const inferredPath = inferredByFenceIndex.get(codeFenceCounter);
+          const shortTarget = inferredPath ? inferredPath.replace(/^coding-workspace\//, '') : undefined;
+
           return (
             <div key={idx} className="overflow-hidden rounded-md border border-slate-800 bg-slate-950">
-              <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-2.5 py-1 font-mono text-[10px] text-slate-400">
-                <span>{block.language || 'code'}</span>
-                <button
-                  type="button"
-                  onClick={() => void handleCopyCode(block.code, idx)}
-                  className="inline-flex items-center gap-1 text-slate-300 hover:text-white"
-                >
-                  {copiedCodeIdx === idx ? (
-                    <>
-                      <Check className="h-3 w-3 text-emerald-400" aria-hidden="true" />
-                      Kopiert
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="h-3 w-3" aria-hidden="true" />
-                      Code kopieren
-                    </>
+              <div className="flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900 px-2.5 py-1 font-mono text-[10px] text-slate-400">
+                <span className="truncate">
+                  {block.language || 'code'}
+                  {shortTarget ? ` · ${shortTarget}` : ''}
+                </span>
+                <div className="flex shrink-0 items-center gap-3">
+                  {onApplyCode && !isTree && (
+                    <button
+                      type="button"
+                      onClick={() => handleApplyCode(block.code, block.language || 'text', idx, inferredPath)}
+                      className="inline-flex items-center gap-1 font-medium text-teal-300 hover:text-teal-200"
+                    >
+                      {appliedCodeIdx === idx ? (
+                        <>
+                          <Check className="h-3 w-3 text-emerald-400" aria-hidden="true" />
+                          Gespeichert
+                        </>
+                      ) : (
+                        <span>
+                          {shortTarget
+                            ? `In ${shortTarget} speichern`
+                            : applyCodeLabel || 'In coding-workspace/ speichern'}
+                        </span>
+                      )}
+                    </button>
                   )}
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyCode(block.code, idx)}
+                    className="inline-flex items-center gap-1 text-slate-300 hover:text-white"
+                  >
+                    {copiedCodeIdx === idx ? (
+                      <>
+                        <Check className="h-3 w-3 text-emerald-400" aria-hidden="true" />
+                        Kopiert
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3 w-3" aria-hidden="true" />
+                        Code kopieren
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
-              <pre className="max-h-72 overflow-x-auto p-2.5 font-mono text-[11px] leading-relaxed text-slate-100">
+              <pre className="max-h-80 overflow-x-auto p-2.5 font-mono text-[11px] leading-relaxed text-slate-100">
                 <code>{block.code}</code>
               </pre>
             </div>

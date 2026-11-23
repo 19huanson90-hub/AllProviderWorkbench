@@ -17,6 +17,26 @@ import {
 } from './src/lib/chatEngine.ts';
 import { buildInitialTestResults, classifyAllProviders } from './src/lib/classifier.ts';
 import {
+  fetchAiHordeModels,
+  runAiHordeChat,
+  runHfSpaceChat,
+  runOpenAiCompatibleCodingChat,
+  validateCloudTunnelUrl,
+} from './src/lib/codingProviders.ts';
+import {
+  CODING_TOOL_DEFINITIONS,
+  FREE_UNCENSORED_API_PRESETS,
+  HF_SPACE_PRESETS,
+  type CodingMainWay,
+  type CodingToolId,
+  type ThinkingMode,
+} from './src/lib/codingTypes.ts';
+import {
+  readSafeWorkspaceFile,
+  scanSafeWorkspaceTree,
+  writeSafeCodingSandboxFile,
+} from './src/lib/codingWorkspace.ts';
+import {
   computeNextRunAt,
   createDefaultWorkspace,
   createId,
@@ -1084,7 +1104,7 @@ async function startServer() {
         }
       }
       const latencyMs = Date.now() - start;
-      const rawText = (await response.text()).slice(0, 200000);
+      const rawText = (await response.text()).slice(0, 1500000);
       let parsed: unknown = null;
       try {
         parsed = JSON.parse(rawText);
@@ -1228,19 +1248,25 @@ async function startServer() {
           latencyMs,
           targetUrl,
           reply: extracted.reply,
+          thinking: extracted.thinking,
           model: extracted.model || payloadBody.model,
           usage: extracted.usage,
         });
         return;
       }
 
+      const looksLikeHtml = /^\s*<(?:!doctype|html)\b/i.test(rawText);
       const errHint =
         extracted.errorMessage ||
         (response.status === 401 || response.status === 403
           ? `HTTP ${response.status}: Authentifizierung fehlgeschlagen — bitte gültigen Session-API-Key / Bridge-Token eintragen.`
-          : response.status === 404
-            ? `HTTP 404: Endpunkt ${targetUrl} oder Modell "${payloadBody.model}" nicht gefunden.`
-            : `HTTP ${response.status} von ${resolved.label}.`);
+          : response.status === 429
+            ? `HTTP 429: Rate-Limit oder API-Key erforderlich bei ${resolved.label}${!effectiveKey ? ' (aktuell ohne Key gesendet)' : ''}.`
+            : response.ok && looksLikeHtml
+              ? `HTML-Webseite statt OpenAI-JSON (HTTP ${response.status}) von ${resolved.label} (${targetUrl}). Die Basis-URL zeigt auf ein Web-Portal statt auf den API-Host — bitte offizielle API-Basis-URL prüfen.`
+              : response.status === 404
+                ? `HTTP 404: Endpunkt ${targetUrl} oder Modell "${payloadBody.model}" nicht gefunden.`
+                : `HTTP ${response.status} von ${resolved.label}.`);
 
       res.json({
         ok: false,
@@ -1508,6 +1534,433 @@ async function startServer() {
       job: result.job,
       workspace: notebooksWorkspace,
     });
+  });
+
+  // =========================================================================
+  // Coding-Studio Safe Local Workspace Explorer & Sandbox Routes
+  // Strictly confined to workspace root (read) & coding-workspace/ (write).
+  // =========================================================================
+  app.get('/api/coding/workspace/tree', (req, res) => {
+    const subDir = typeof req.query.dir === 'string' ? req.query.dir : '';
+    const scanned = scanSafeWorkspaceTree(__dirname, subDir);
+    if (!scanned.ok) {
+      res.status(400).json({ ok: false, error: scanned.error });
+      return;
+    }
+    res.json(scanned);
+  });
+
+  app.get('/api/coding/workspace/file', (req, res) => {
+    const relPath = typeof req.query.path === 'string' ? req.query.path : '';
+    const result = readSafeWorkspaceFile(__dirname, relPath);
+    if (!result.ok) {
+      res.status(400).json({ ok: false, error: result.error });
+      return;
+    }
+    res.json(result);
+  });
+
+  app.put('/api/coding/workspace/file', (req, res) => {
+    const { path: relPath, content } = req.body as { path?: string; content?: string };
+    if (typeof relPath !== 'string' || typeof content !== 'string') {
+      res.status(400).json({ ok: false, error: 'Dateipfad und Inhalt erforderlich.' });
+      return;
+    }
+    const saved = writeSafeCodingSandboxFile(__dirname, relPath, content);
+    if (!saved.ok) {
+      res.status(400).json({ ok: false, error: saved.error });
+      return;
+    }
+    res.json(saved);
+  });
+
+  // =========================================================================
+  // Coding-Studio 4 Primary Connections + Unified Tool-Enabled Chat Endpoint
+  // =========================================================================
+  app.get('/api/coding/providers/horde/models', async (_req, res) => {
+    const result = await fetchAiHordeModels();
+    res.json(result);
+  });
+
+  app.get('/api/coding/providers/hf/status', async (_req, res) => {
+    const spaces = await Promise.all(
+      HF_SPACE_PRESETS.map(async (preset) => {
+        try {
+          const r = await fetchWithTimeout(
+            `https://huggingface.co/api/spaces/${preset.id}`,
+            { method: 'GET' },
+            6000
+          );
+          if (!r.ok) {
+            return { id: preset.id, stage: `HTTP_${r.status}`, hardware: preset.hardware };
+          }
+          const data = (await r.json()) as {
+            runtime?: { stage?: string; hardware?: { current?: string } };
+          };
+          return {
+            id: preset.id,
+            stage: data.runtime?.stage || 'UNKNOWN',
+            hardware: data.runtime?.hardware?.current || preset.hardware,
+          };
+        } catch {
+          return { id: preset.id, stage: 'UNREACHABLE', hardware: preset.hardware };
+        }
+      })
+    );
+    res.json({ ok: true, spaces });
+  });
+
+  app.post('/api/coding/providers/free-api/models', async (req, res) => {
+    const { presetId, apiKey } = req.body as { presetId?: string; apiKey?: string };
+    const preset = FREE_UNCENSORED_API_PRESETS.find((p) => p.id === presetId);
+    if (!preset) {
+      res.status(400).json({ ok: false, models: [], error: 'Unbekanntes Free-API-Preset.' });
+      return;
+    }
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (typeof apiKey === 'string' && apiKey.trim()) {
+      headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+    }
+    try {
+      let url = `${preset.baseUrl.replace(/\/+$/, '')}/models`;
+      let response = await fetchWithTimeout(url, { method: 'GET', headers }, 9000);
+      if (!response.ok && preset.baseUrl.endsWith('/openai')) {
+        url = `${preset.baseUrl.replace(/\/openai$/, '')}/models`;
+        response = await fetchWithTimeout(url, { method: 'GET', headers }, 9000);
+      }
+      const txt = (await response.text()).slice(0, 1_500_000);
+      if (!response.ok) {
+        res.json({
+          ok: false,
+          models: [...preset.models],
+          error: `HTTP ${response.status} von ${preset.label} (Standard-Modelle bleiben nutzbar).`,
+        });
+        return;
+      }
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(txt);
+      } catch {
+        // non-JSON
+      }
+      const cat = categorizeModelIds(parsed);
+      const list = cat.chatModels.length > 0 ? cat.chatModels : cat.allModels;
+      res.json({
+        ok: true,
+        models: list.length > 0 ? list : [...preset.models],
+        targetUrl: url,
+      });
+    } catch (err: unknown) {
+      res.json({
+        ok: false,
+        models: [...preset.models],
+        error: err instanceof Error ? err.message.slice(0, 140) : 'Abruf fehlgeschlagen.',
+      });
+    }
+  });
+
+  app.post('/api/coding/providers/tunnel/models', async (req, res) => {
+    const { tunnelUrl, apiKey } = req.body as { tunnelUrl?: string; apiKey?: string };
+    const checked = validateCloudTunnelUrl(typeof tunnelUrl === 'string' ? tunnelUrl : '');
+    if (!checked.ok) {
+      res.status(400).json({ ok: false, models: [], error: checked.error });
+      return;
+    }
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (typeof apiKey === 'string' && apiKey.trim()) {
+      headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+    }
+    try {
+      const oaiRes = await fetchWithTimeout(`${checked.baseUrl}/models`, { method: 'GET', headers }, 9000);
+      if (oaiRes.ok) {
+        const parsed = (await oaiRes.json()) as unknown;
+        const models = extractModelIds(parsed);
+        res.json({ ok: true, models, baseUrl: checked.baseUrl });
+        return;
+      }
+      // Fallback for native Ollama `/api/tags`
+      const tagsRes = await fetchWithTimeout(`${checked.rootOrigin}/api/tags`, { method: 'GET', headers }, 9000);
+      if (tagsRes.ok) {
+        const data = (await tagsRes.json()) as { models?: Array<{ name?: string }> };
+        const models = Array.isArray(data.models)
+          ? data.models.map((m) => m.name).filter((n): n is string => typeof n === 'string' && n.length > 0)
+          : [];
+        res.json({ ok: true, models, baseUrl: checked.baseUrl });
+        return;
+      }
+      res.json({
+        ok: false,
+        models: [],
+        baseUrl: checked.baseUrl,
+        error: `Tunnel erreichbar, aber /v1/models meldete HTTP ${oaiRes.status}. Läuft Ollama/vLLM im Notebook?`,
+      });
+    } catch (err: unknown) {
+      res.json({
+        ok: false,
+        models: [],
+        baseUrl: checked.baseUrl,
+        error: `Tunnel nicht erreichbar: ${err instanceof Error ? err.message.slice(0, 140) : 'Verbindungsfehler'}`,
+      });
+    }
+  });
+
+  app.post('/api/coding/chat', async (req, res) => {
+    const body = req.body as {
+      way?: CodingMainWay;
+      warningAcknowledged?: boolean;
+      activeProjectId?: string;
+      enabledTools?: string[];
+      messages?: unknown;
+      systemPrompt?: string;
+      images?: unknown;
+      thinkingMode?: ThinkingMode;
+      temperature?: number;
+      maxTokens?: number;
+      topP?: number;
+      topK?: number;
+      repetitionPenalty?: number;
+      presencePenalty?: number;
+      frequencyPenalty?: number;
+      seed?: number;
+      // Weg 1: HF Space
+      hfSpaceId?: string;
+      hfToken?: string;
+      gpuDuration?: number;
+      useDflash?: boolean;
+      // Weg 2: AI Horde
+      hordeModel?: string;
+      hordeApiKey?: string;
+      hordeMaxLength?: number;
+      hordeMaxContextLength?: number;
+      hordeRepPen?: number;
+      hordeTrustedWorkers?: boolean;
+      hordeSlowWorkers?: boolean;
+      hordeAllowDowngrade?: boolean;
+      // Weg 3: Free Uncensored API
+      freeApiPresetId?: string;
+      // Weg 4: Cloud-GPU Tunnel
+      tunnelUrl?: string;
+      numCtx?: number;
+      // Weg 3/4/5 common or fallback
+      model?: string;
+      apiKey?: string;
+      targetType?: ChatTargetType;
+      bridgeId?: string;
+      providerId?: string;
+      endpointUrl?: string;
+      allowManualOverride?: boolean;
+    };
+
+    const way: CodingMainWay =
+      body.way === 'hf_space' ||
+      body.way === 'ai_horde' ||
+      body.way === 'free_uncensored_api' ||
+      body.way === 'cloud_tunnel' ||
+      body.way === 'catalog_or_bridge'
+        ? body.way
+        : 'hf_space';
+
+    if (way !== 'catalog_or_bridge' && body.warningAcknowledged !== true) {
+      res.status(400).json({
+        ok: false,
+        error:
+          'Bitte zuerst den Warnhinweis für diese Verbindung im Coding-Studio bestätigen (Checkbox aktivieren).',
+      });
+      return;
+    }
+
+    const allowedToolIds = new Set<string>(CODING_TOOL_DEFINITIONS.map((t) => t.id));
+    const enabledTools = new Set<CodingToolId>(
+      Array.isArray(body.enabledTools)
+        ? body.enabledTools.filter((id): id is CodingToolId => typeof id === 'string' && allowedToolIds.has(id))
+        : []
+    );
+
+    const activeProject =
+      typeof body.activeProjectId === 'string'
+        ? notebooksWorkspace.projects.find((p) => p.id === body.activeProjectId) || null
+        : notebooksWorkspace.projects[0] || null;
+
+    const toolCtx =
+      enabledTools.size > 0
+        ? {
+            rootDir: __dirname,
+            activeProject,
+            enabledTools,
+          }
+        : undefined;
+
+    const thinkingMode: ThinkingMode =
+      body.thinkingMode === 'off' || body.thinkingMode === 'deep' ? body.thinkingMode : 'standard';
+    const systemPrompt = typeof body.systemPrompt === 'string' ? body.systemPrompt.slice(0, 31500) : '';
+    const temperature =
+      typeof body.temperature === 'number' && Number.isFinite(body.temperature) ? body.temperature : 0.25;
+    const maxTokens =
+      typeof body.maxTokens === 'number' && Number.isFinite(body.maxTokens) ? body.maxTokens : 2048;
+
+    // Extract first safe raster image if attached (for HF Vision Space)
+    const firstSafeImage =
+      Array.isArray(body.images)
+        ? body.images.find(
+            (img): img is string =>
+              typeof img === 'string' && /^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(img.trim())
+          )
+        : undefined;
+
+    if (way === 'hf_space') {
+      const sanitizedNoSys = sanitizeChatMessages(body.messages, undefined, undefined);
+      if (sanitizedNoSys.length === 0 || !sanitizedNoSys.some((m) => m.role === 'user')) {
+        res.status(400).json({ ok: false, error: 'Bitte eine Nachricht eingeben.' });
+        return;
+      }
+      const result = await runHfSpaceChat({
+        spaceId: typeof body.hfSpaceId === 'string' && body.hfSpaceId ? body.hfSpaceId : HF_SPACE_PRESETS[0].id,
+        hfToken: typeof body.hfToken === 'string' ? body.hfToken : undefined,
+        messages: sanitizedNoSys,
+        systemPrompt,
+        thinkingMode,
+        temperature,
+        maxTokens,
+        topP: typeof body.topP === 'number' && Number.isFinite(body.topP) ? body.topP : 0.95,
+        topK: typeof body.topK === 'number' && Number.isFinite(body.topK) ? body.topK : 40,
+        repetitionPenalty:
+          typeof body.repetitionPenalty === 'number' && Number.isFinite(body.repetitionPenalty)
+            ? body.repetitionPenalty
+            : 1.05,
+        gpuDuration:
+          typeof body.gpuDuration === 'number' && Number.isFinite(body.gpuDuration) ? body.gpuDuration : 60,
+        useDflash: body.useDflash !== false,
+        imageBase64: firstSafeImage,
+        toolCtx,
+      });
+      res.json(result);
+      return;
+    }
+
+    if (way === 'ai_horde') {
+      const sanitizedNoSys = sanitizeChatMessages(body.messages, undefined, undefined);
+      if (sanitizedNoSys.length === 0 || !sanitizedNoSys.some((m) => m.role === 'user')) {
+        res.status(400).json({ ok: false, error: 'Bitte eine Nachricht eingeben.' });
+        return;
+      }
+      const result = await runAiHordeChat({
+        model: typeof body.hordeModel === 'string' ? body.hordeModel : '',
+        apiKey: typeof body.hordeApiKey === 'string' ? body.hordeApiKey : undefined,
+        messages: sanitizedNoSys,
+        systemPrompt,
+        maxLength:
+          typeof body.hordeMaxLength === 'number' && Number.isFinite(body.hordeMaxLength)
+            ? body.hordeMaxLength
+            : Math.min(512, maxTokens),
+        maxContextLength:
+          typeof body.hordeMaxContextLength === 'number' && Number.isFinite(body.hordeMaxContextLength)
+            ? body.hordeMaxContextLength
+            : 4096,
+        temperature,
+        topP: typeof body.topP === 'number' && Number.isFinite(body.topP) ? body.topP : 0.95,
+        topK: typeof body.topK === 'number' && Number.isFinite(body.topK) ? body.topK : 40,
+        repPen:
+          typeof body.hordeRepPen === 'number' && Number.isFinite(body.hordeRepPen)
+            ? body.hordeRepPen
+            : 1.08,
+        trustedWorkers: body.hordeTrustedWorkers === true,
+        slowWorkers: body.hordeSlowWorkers !== false,
+        allowDowngrade: body.hordeAllowDowngrade !== false,
+        autoContinue: (body as { hordeAutoContinue?: boolean }).hordeAutoContinue !== false,
+        toolCtx,
+      });
+      res.json(result);
+      return;
+    }
+
+    const sanitizedMessages = sanitizeChatMessages(body.messages, systemPrompt, body.images);
+    if (sanitizedMessages.length === 0 || !sanitizedMessages.some((m) => m.role === 'user')) {
+      res.status(400).json({ ok: false, error: 'Bitte eine Nachricht eingeben.' });
+      return;
+    }
+
+    if (way === 'free_uncensored_api') {
+      const preset =
+        FREE_UNCENSORED_API_PRESETS.find((p) => p.id === body.freeApiPresetId) ||
+        FREE_UNCENSORED_API_PRESETS[0];
+      if (preset.needsKey && !(typeof body.apiKey === 'string' && body.apiKey.trim())) {
+        res.status(400).json({
+          ok: false,
+          error: `${preset.label} erfordert einen kostenlosen Session-API-Key. Klicke rechts auf „API-Key holen“ oder wähle OVHcloud/Pollinations (Ohne Key).`,
+        });
+        return;
+      }
+      const result = await runOpenAiCompatibleCodingChat({
+        baseUrl: preset.baseUrl,
+        label: preset.label,
+        model: (typeof body.model === 'string' && body.model.trim()) || preset.defaultModel,
+        apiKey: typeof body.apiKey === 'string' ? body.apiKey : undefined,
+        messages: sanitizedMessages,
+        temperature,
+        topP: typeof body.topP === 'number' ? body.topP : undefined,
+        maxTokens,
+        presencePenalty: typeof body.presencePenalty === 'number' ? body.presencePenalty : undefined,
+        frequencyPenalty: typeof body.frequencyPenalty === 'number' ? body.frequencyPenalty : undefined,
+        seed: typeof body.seed === 'number' ? body.seed : undefined,
+        toolCtx,
+      });
+      res.json(result);
+      return;
+    }
+
+    if (way === 'cloud_tunnel') {
+      const checked = validateCloudTunnelUrl(typeof body.tunnelUrl === 'string' ? body.tunnelUrl : '');
+      if (!checked.ok) {
+        res.status(400).json({ ok: false, error: checked.error });
+        return;
+      }
+      const result = await runOpenAiCompatibleCodingChat({
+        baseUrl: checked.baseUrl,
+        label: 'Cloud-GPU Notebook Tunnel',
+        model: (typeof body.model === 'string' && body.model.trim()) || 'huihui_ai/qwen3-coder-abliterated',
+        apiKey: typeof body.apiKey === 'string' ? body.apiKey : undefined,
+        messages: sanitizedMessages,
+        temperature,
+        topP: typeof body.topP === 'number' ? body.topP : undefined,
+        maxTokens,
+        seed: typeof body.seed === 'number' ? body.seed : undefined,
+        numCtx: typeof body.numCtx === 'number' ? body.numCtx : undefined,
+        toolCtx,
+      });
+      res.json(result);
+      return;
+    }
+
+    // Secondary Fallback: catalog_or_bridge (all 368 catalog providers, 7 ROT bridges, LiteLLM, Local 127.0.0.1)
+    const resolved = validateChatTarget({
+      targetType: body.targetType || 'provider',
+      bridgeId: body.bridgeId,
+      providerId: body.providerId,
+      endpointUrl: body.endpointUrl,
+      allowManualOverride: body.allowManualOverride === true,
+      providers: state.providers,
+      bridgeSelections: state.bridgeSelections,
+    });
+    if (!resolved.ok) {
+      res.status(403).json({ ok: false, error: resolved.error });
+      return;
+    }
+    const effectiveKey =
+      (typeof body.apiKey === 'string' && body.apiKey.trim()) ||
+      (resolved.envVarHint ? process.env[resolved.envVarHint]?.trim() : '') ||
+      '';
+    const result = await runOpenAiCompatibleCodingChat({
+      baseUrl: resolved.baseUrl,
+      label: resolved.label,
+      model: (typeof body.model === 'string' && body.model.trim()) || 'default',
+      apiKey: effectiveKey || undefined,
+      messages: sanitizedMessages,
+      temperature,
+      topP: typeof body.topP === 'number' ? body.topP : undefined,
+      maxTokens,
+      toolCtx,
+    });
+    res.json(result);
   });
 
   // Live bridge /healthz & capability probe (strictly allowlisted 127.0.0.1:<port>)

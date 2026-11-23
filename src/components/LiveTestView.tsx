@@ -1,6 +1,10 @@
 import {
   AlertTriangle,
+  ArrowUpDown,
   Download,
+  ExternalLink,
+  Flame,
+  KeyRound,
   Lock,
   Network,
   Play,
@@ -11,7 +15,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { isUsableGreenOrGelb } from '../lib/testEngine.ts';
+import { isUsableGreenOrGelb, resolveProviderApiKeyPage } from '../lib/testEngine.ts';
 import type {
   ClassifiedProvider,
   TestAnalytics,
@@ -23,6 +27,7 @@ import {
   ReadinessLabel,
   SecurityClassTag,
   TestStatusTag,
+  UnfilteredTag,
 } from './SecurityIndicator.tsx';
 
 export type BatchTestMode =
@@ -76,10 +81,16 @@ export function LiveTestView({
   applyingRouter,
 }: LiveTestViewProps) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  const [onlyUnfiltered, setOnlyUnfiltered] = useState<boolean>(false);
+  const [sortBy, setSortBy] = useState<'default' | 'unfiltered_first' | 'score_desc' | 'name_asc'>('default');
   const [search, setSearch] = useState('');
 
   const providerById = useMemo(() => new Map(providers.map((p) => [p.id, p])), [providers]);
   const routerSet = useMemo(() => new Set(activeRouterProviderIds), [activeRouterProviderIds]);
+  const unfilteredCount = useMemo(
+    () => providers.filter((p) => p.isUnfiltered).length,
+    [providers]
+  );
 
   const stats = useMemo(() => {
     let executed = 0;
@@ -106,7 +117,9 @@ export function LiveTestView({
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return testResults.filter((r) => {
+    const list = testResults.filter((r) => {
+      const prov = providerById.get(r.id);
+      if (onlyUnfiltered && !prov?.isUnfiltered) return false;
       if (statusFilter === 'EXECUTED' && !r.executed) return false;
       if (
         statusFilter === 'READY' &&
@@ -128,12 +141,33 @@ export function LiveTestView({
       }
       if (q) {
         const hay =
-          `${r.id} ${r.name} ${r.kategorie} ${r.status} ${r.note} ${r.url} ${r.readinessTier ?? ''}`.toLowerCase();
+          `${r.id} ${r.name} ${r.kategorie} ${r.status} ${r.note} ${r.url} ${r.readinessTier ?? ''} ${prov?.isUnfiltered ? 'unfiltered uncensored' : ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [testResults, statusFilter, search]);
+
+    if (sortBy === 'unfiltered_first') {
+      return [...list].sort((a, b) => {
+        const ua = providerById.get(a.id)?.isUnfiltered ? 1 : 0;
+        const ub = providerById.get(b.id)?.isUnfiltered ? 1 : 0;
+        if (ua !== ub) return ub - ua;
+        return a.name.localeCompare(b.name, 'de');
+      });
+    }
+    if (sortBy === 'score_desc') {
+      return [...list].sort((a, b) => {
+        const sa = a.executed && typeof a.healthScore === 'number' ? a.healthScore : -1;
+        const sb = b.executed && typeof b.healthScore === 'number' ? b.healthScore : -1;
+        if (sa !== sb) return sb - sa;
+        return a.name.localeCompare(b.name, 'de');
+      });
+    }
+    if (sortBy === 'name_asc') {
+      return [...list].sort((a, b) => a.name.localeCompare(b.name, 'de'));
+    }
+    return list;
+  }, [testResults, providerById, statusFilter, onlyUnfiltered, sortBy, search]);
 
   const progressPct =
     batchState.total > 0 ? Math.round((batchState.completed / batchState.total) * 100) : 0;
@@ -384,53 +418,90 @@ export function LiveTestView({
       </section>
 
       {/* Filter Strip */}
-      <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-3.5 sm:flex-row sm:items-center sm:justify-between">
-        <div
-          className="inline-flex flex-wrap rounded-md border border-slate-200 bg-slate-50 p-0.5"
-          role="group"
-          aria-label="Nach Test-Status filtern"
-        >
-          {(
-            [
-              ['ALL', `Alle (${testResults.length})`],
-              ['EXECUTED', `Getestet (${stats.executed})`],
+      <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-3.5 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          <div
+            className="inline-flex flex-wrap rounded-md border border-slate-200 bg-slate-50 p-0.5"
+            role="group"
+            aria-label="Nach Test-Status filtern"
+          >
+            {(
               [
-                'READY',
-                `Nutzbar (${testAnalytics.readyImmediateCount + testAnalytics.readyWithKeyCount + testAnalytics.localEnginesCount})`,
-              ],
-              ['WAF', `WAF (${stats.waf})`],
-              ['ERRORS', `Fehler (${stats.errors})`],
-              ['SKIPPED', `Gesperrt/Skip (${stats.skipped})`],
-            ] as const
-          ).map(([val, label]) => (
-            <button
-              key={val}
-              type="button"
-              onClick={() => setStatusFilter(val)}
-              className={`rounded px-2.5 py-1 text-xs font-medium transition-colors tabular-nums ${
-                statusFilter === val
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
+                ['ALL', `Alle (${testResults.length})`],
+                ['EXECUTED', `Getestet (${stats.executed})`],
+                [
+                  'READY',
+                  `Nutzbar (${testAnalytics.readyImmediateCount + testAnalytics.readyWithKeyCount + testAnalytics.localEnginesCount})`,
+                ],
+                ['WAF', `WAF (${stats.waf})`],
+                ['ERRORS', `Fehler (${stats.errors})`],
+                ['SKIPPED', `Gesperrt/Skip (${stats.skipped})`],
+              ] as const
+            ).map(([val, label]) => (
+              <button
+                key={val}
+                type="button"
+                onClick={() => setStatusFilter(val)}
+                className={`rounded px-2.5 py-1 text-xs font-medium transition-colors tabular-nums ${
+                  statusFilter === val
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setOnlyUnfiltered((prev) => !prev)}
+            aria-pressed={onlyUnfiltered}
+            className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-xs font-semibold transition-colors tabular-nums ${
+              onlyUnfiltered
+                ? 'border-fuchsia-600 bg-fuchsia-700 text-white shadow-xs'
+                : 'border-fuchsia-300 bg-fuchsia-50 text-fuchsia-800 hover:bg-fuchsia-100'
+            }`}
+          >
+            <Flame className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            Nur Unfiltered ({unfilteredCount})
+          </button>
         </div>
 
-        <div className="relative">
-          <Search
-            className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-slate-400"
-            aria-hidden="true"
-          />
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Provider, URL oder Status suchen…"
-            aria-label="Testergebnisse durchsuchen"
-            className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none sm:w-72"
-          />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex items-center gap-1.5">
+            <ArrowUpDown className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+            <select
+              value={sortBy}
+              onChange={(e) =>
+                setSortBy(
+                  e.target.value as 'default' | 'unfiltered_first' | 'score_desc' | 'name_asc'
+                )
+              }
+              aria-label="Testergebnisse sortieren"
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-800 focus:border-teal-700 focus:outline-none"
+            >
+              <option value="default">Sortierung: Standard</option>
+              <option value="unfiltered_first">Sortierung: Unfiltered zuerst</option>
+              <option value="score_desc">Sortierung: Score (hoch → tief)</option>
+              <option value="name_asc">Sortierung: Name (A–Z)</option>
+            </select>
+          </div>
+
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-slate-400"
+              aria-hidden="true"
+            />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Provider, URL oder Status suchen…"
+              aria-label="Testergebnisse durchsuchen"
+              className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none sm:w-64"
+            />
+          </div>
         </div>
       </div>
 
@@ -445,7 +516,7 @@ export function LiveTestView({
                 <th className="w-44 px-3 py-3">Status & Phasen</th>
                 <th className="w-24 px-3 py-3">Score / HTTP</th>
                 <th className="px-3 py-3">Diagnose & URL</th>
-                <th className="w-40 px-3 py-3 text-right">Aktionen</th>
+                <th className="w-56 px-3 py-3 text-right">Aktionen</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -458,12 +529,15 @@ export function LiveTestView({
                 return (
                   <tr key={row.id} className="hover:bg-slate-50/70">
                     <td className="whitespace-nowrap px-3 py-2.5 align-top">
-                      <SecurityClassTag secClass={row.securityClass} />
-                      {inRouter && (
-                        <div className="mt-1 font-mono text-[10px] font-semibold text-teal-700">
-                          IM ROUTER
-                        </div>
-                      )}
+                      <div className="flex flex-col items-start gap-1">
+                        <SecurityClassTag secClass={row.securityClass} />
+                        {provider?.isUnfiltered && <UnfilteredTag compact />}
+                        {inRouter && (
+                          <div className="font-mono text-[10px] font-semibold text-teal-700">
+                            IM ROUTER
+                          </div>
+                        )}
+                      </div>
                     </td>
                     <td className="px-3 py-2.5 align-top">
                       <div className="break-words font-medium text-slate-900">{row.name}</div>
@@ -506,6 +580,23 @@ export function LiveTestView({
                         </span>
                       ) : (
                         <div className="inline-flex items-center justify-end gap-1.5">
+                          {(() => {
+                            const keyPage = resolveProviderApiKeyPage(provider);
+                            return keyPage ? (
+                              <a
+                                href={keyPage.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title={`${keyPage.label} von ${row.name} öffnen (${keyPage.url})`}
+                                aria-label={`API-Key-Seite von ${row.name} öffnen`}
+                                className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900 transition-colors hover:bg-amber-100"
+                              >
+                                <KeyRound className="h-3 w-3 shrink-0" aria-hidden="true" />
+                                Key
+                                <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-70" aria-hidden="true" />
+                              </a>
+                            ) : null;
+                          })()}
                           <button
                             type="button"
                             onClick={() => onRunSingleTest(row.id)}

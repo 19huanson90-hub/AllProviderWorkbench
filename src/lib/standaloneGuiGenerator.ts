@@ -80,6 +80,7 @@ export function generateStandaloneGuiHtml(): string {
     .cls-GELB { color: var(--amber); font-weight: 700; }
     .cls-ROT { color: var(--red); font-weight: 700; }
     .cls-SCHWARZ { color: var(--dark); font-weight: 700; }
+    .tag-unfiltered { display: inline-block; margin-top: 4px; padding: 1px 5px; font-family: ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; color: #86198f; background: #fdf4ff; border: 1px solid #f0abfc; border-radius: 3px; }
     .st-ok { color: var(--green); font-weight: 600; }
     .st-waf { color: var(--amber); font-weight: 600; }
     .st-err { color: var(--red); font-weight: 600; }
@@ -139,14 +140,23 @@ export function generateStandaloneGuiHtml(): string {
     <section id="tab-classification">
       <div class="card">
         <div class="toolbar">
-          <div style="display:flex;flex-wrap:wrap;gap:8px;flex:1;min-width:260px;">
-            <input id="cls-search" type="search" placeholder="Name, ID oder URL filtern (z. B. groq, ollama, github.com)…" style="flex:1;min-width:220px;" aria-label="Provider suchen" />
+          <div style="display:flex;flex-wrap:wrap;gap:8px;flex:1;min-width:260px;align-items:center;">
+            <input id="cls-search" type="search" placeholder="Name, ID, URL oder unfiltered filtern…" style="flex:1;min-width:200px;" aria-label="Provider suchen" />
             <select id="cls-class" aria-label="Sicherheitsklasse">
               <option value="ALL">Alle Klassen</option>
               <option value="GRUEN">GRÜN</option>
               <option value="GELB">GELB</option>
               <option value="ROT">ROT</option>
               <option value="SCHWARZ">SCHWARZ</option>
+            </select>
+            <label style="display:inline-flex;align-items:center;gap:5px;padding:5px 9px;border:1px solid #f0abfc;background:#fdf4ff;color:#86198f;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">
+              <input id="cls-unfiltered" type="checkbox" />
+              Nur Unfiltered
+            </label>
+            <select id="cls-sort" aria-label="Sortierung">
+              <option value="default">Sortierung: Standard</option>
+              <option value="unfiltered_first">Sortierung: Unfiltered zuerst</option>
+              <option value="name_asc">Sortierung: Name (A–Z)</option>
             </select>
           </div>
           <div class="muted mono" id="cls-count"></div>
@@ -198,15 +208,24 @@ export function generateStandaloneGuiHtml(): string {
 
       <div class="card">
         <div class="toolbar">
-          <div style="display:flex;flex-wrap:wrap;gap:6px;">
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
             <button class="btn btn-sm" data-tfilter="ALL">Alle</button>
             <button class="btn btn-sm" data-tfilter="EXECUTED">Getestet</button>
             <button class="btn btn-sm" data-tfilter="OK">OK / Redirect</button>
             <button class="btn btn-sm" data-tfilter="WAF">WAF (403/429)</button>
             <button class="btn btn-sm" data-tfilter="ERR">Fehler</button>
             <button class="btn btn-sm" data-tfilter="SKIP">Gesperrt / Skip</button>
+            <button class="btn btn-sm" data-tfilter="UNFILTERED" style="border-color:#f0abfc;background:#fdf4ff;color:#86198f;">Nur Unfiltered</button>
           </div>
-          <input id="test-search" type="search" placeholder="Provider, Status oder URL suchen…" style="width:260px;" />
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+            <select id="test-sort" aria-label="Testergebnisse sortieren">
+              <option value="default">Sortierung: Standard</option>
+              <option value="unfiltered_first">Unfiltered zuerst</option>
+              <option value="score_desc">Score (hoch → tief)</option>
+              <option value="name_asc">Name (A–Z)</option>
+            </select>
+            <input id="test-search" type="search" placeholder="Provider, Status oder URL suchen…" style="width:230px;" />
+          </div>
         </div>
       </div>
 
@@ -272,7 +291,16 @@ export function generateStandaloneGuiHtml(): string {
             <select id="chat-bridge" style="width:100%;margin-top:3px;"></select>
           </div>
           <div id="chat-provider-wrap" class="hidden">
-            <label class="muted" for="chat-provider">Provider auswählen (GRÜN / GELB)</label>
+            <div class="toolbar" style="margin-bottom:4px;">
+              <label class="muted" for="chat-provider">Provider auswählen (GRÜN / GELB)</label>
+              <div style="display:inline-flex;align-items:center;gap:8px;">
+                <a id="chat-api-key-link" class="btn btn-sm hidden" href="#" target="_blank" rel="noopener noreferrer" style="background:#fffbeb;border-color:#fcd34d;color:#78350f;text-decoration:none;">API-Key ↗</a>
+                <label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#86198f;font-weight:600;cursor:pointer;">
+                  <input id="chat-only-unfiltered" type="checkbox" />
+                  Nur Unfiltered
+                </label>
+              </div>
+            </div>
             <select id="chat-provider" style="width:100%;margin-top:3px;"></select>
           </div>
           <div>
@@ -281,9 +309,11 @@ export function generateStandaloneGuiHtml(): string {
           </div>
           <div>
             <div class="toolbar">
-              <label class="muted" for="chat-model">Modell-ID</label>
+              <label class="muted" id="chat-model-label" for="chat-model">Modell-ID</label>
               <button class="btn btn-sm" id="chat-load-models">Modelle laden</button>
             </div>
+            <select id="chat-bridge-model" class="mono hidden" style="width:100%;margin-top:3px;"></select>
+            <div id="chat-bridge-model-single" class="mono hidden" style="margin-top:3px;padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px;background:#f1f5f9;font-size:12px;"></div>
             <input id="chat-model" type="text" list="chat-model-list" class="mono" style="width:100%;margin-top:3px;" value="default" />
             <datalist id="chat-model-list"></datalist>
             <div id="chat-models-note" class="muted" style="margin-top:4px;font-size:11px;"></div>
@@ -461,6 +491,7 @@ export function generateStandaloneGuiHtml(): string {
       activeBridge: null,
       chatMessages: [],
       chatSending: false,
+      bridgeLiveModels: new Map(),
     };
 
     function esc(s) {
@@ -552,6 +583,12 @@ export function generateStandaloneGuiHtml(): string {
       if (id.includes('sambanova')) return 'https://api.sambanova.ai/v1';
       if (id.includes('siliconflow')) return 'https://api.siliconflow.com/v1';
       if (id === 'venice-ai' || id.includes('venice')) return 'https://api.venice.ai/api/v1';
+      if (id === 'chutes' || id.includes('chutes')) return 'https://llm.chutes.ai/v1';
+      if (id === 'aionlabs' || id.includes('aionlabs')) return 'https://api.aionlabs.ai/v1';
+      if (id === 'api-airforce' || id.includes('airforce')) return 'https://api.airforce/v1';
+      if (id === 'electronhub' || id.includes('electronhub')) return 'https://api.electronhub.ai/v1';
+      if (id === 'uplinkswitch') return 'https://api.uplinkswitch.com/v1';
+      if (id === 'nanogpt' || id.includes('nano-gpt')) return 'https://nano-gpt.com/api/v1';
       if (url.startsWith('http') && !url.includes('github.com')) {
         const clean = url.replace(/\\/+$/, '');
         if (/\\/v1(\\b|\\/)/i.test(clean)) return clean;
@@ -606,32 +643,99 @@ export function generateStandaloneGuiHtml(): string {
       ].map(([l, v, c]) => '<div class="kpi"><div class="kpi-label">' + l + '</div><div class="kpi-val mono" style="color:' + c + '">' + v + '</div></div>').join('');
     }
 
+    function isUnfiltered(p) {
+      if (!p) return false;
+      const c = normalizeClass(p);
+      if (c === 'SCHWARZ' || p.illegal) return false;
+      if (p.is_unfiltered === true || p.isUnfiltered === true) return true;
+      return /uncensored|unzensiert|abliterat|unfiltered|ungefiltert|no[- ]?filter|xploded|mythomax/i.test(
+        String(p.id || '') + ' ' + String(p.name || '')
+      );
+    }
+
+    function resolveApiKeyPage(p) {
+      if (!p || !isUsable(p)) return null;
+      if (p.auth_typ !== 'api_key' && p.auth_typ !== 'oauth') return null;
+      const id = String(p.id || '').toLowerCase();
+      const u = String(p.url || '').toLowerCase();
+      const map = [
+        [id === 'chutes' || u.includes('chutes.ai'), 'https://chutes.ai/app/settings/api-keys'],
+        [id.includes('openrouter') || u.includes('openrouter.ai'), 'https://openrouter.ai/settings/keys'],
+        [id.includes('groq') || u.includes('groq.com'), 'https://console.groq.com/keys'],
+        [id.includes('cerebras') || u.includes('cerebras.ai'), 'https://cloud.cerebras.ai/'],
+        [id.includes('together') || u.includes('together.xyz'), 'https://api.together.xyz/settings/api-keys'],
+        [id === 'mistral-la-plateforme' || (id.includes('mistral') && u.includes('mistral.ai')), 'https://console.mistral.ai/api-keys'],
+        [id === 'deepseek' || id.includes('deepseek-api'), 'https://platform.deepseek.com/api_keys'],
+        [id.includes('fireworks') || u.includes('fireworks.ai'), 'https://app.fireworks.ai/account/api-keys'],
+        [id.includes('sambanova') || u.includes('sambanova.ai'), 'https://cloud.sambanova.ai/apis'],
+        [id.includes('siliconflow') || u.includes('siliconflow.com'), 'https://cloud.siliconflow.com/account/ak'],
+        [id.includes('google-ai-studio') || id === 'gemini-api', 'https://aistudio.google.com/apikey'],
+        [id === 'openai' || id === 'openai-api', 'https://platform.openai.com/api-keys'],
+        [id.includes('anthropic') || u.includes('anthropic.com'), 'https://platform.claude.com/settings/keys'],
+        [id === 'venice-ai' || u.includes('venice.ai'), 'https://venice.ai/settings/api'],
+        [id === 'nanogpt' || u.includes('nano-gpt.com'), 'https://nano-gpt.com/api'],
+        [id === 'mancer-ai' || u.includes('mancer.tech'), 'https://mancer.tech/dashboard'],
+        [id === 'ppq-ai' || u.includes('ppq.ai'), 'https://ppq.ai/api-docs'],
+        [id === 'nous-research' || u.includes('nousresearch.com'), 'https://portal.nousresearch.com/api-keys'],
+        [id === 'tinfoil-sh' || u.includes('tinfoil.sh'), 'https://dash.tinfoil.sh/'],
+        [id === 'gab-ai' || u.includes('gab.ai'), 'https://gab.ai/settings'],
+        [id.includes('huggingface') || u.includes('huggingface.co'), 'https://huggingface.co/settings/tokens'],
+        [id.includes('github-models') || u.includes('models.github.ai'), 'https://github.com/settings/tokens'],
+        [id.includes('nvidia') || u.includes('build.nvidia.com'), 'https://build.nvidia.com/settings/api-keys'],
+        [id.includes('deepinfra') || u.includes('deepinfra.com'), 'https://deepinfra.com/dash/keys'],
+        [id.includes('nebius') || u.includes('nebius.com'), 'https://tokenfactory.nebius.com/settings/api-keys'],
+      ];
+      for (const [hit, target] of map) {
+        if (hit) return target;
+      }
+      const raw = String(p.url || '').trim();
+      if (/^https?:\\/\\//i.test(raw) && !/^https?:\\/\\/(localhost|127\\.0\\.0\\.1)/i.test(raw)) return raw;
+      return null;
+    }
+
+    function apiKeyBtnHtml(p) {
+      const href = resolveApiKeyPage(p);
+      if (!href) return '';
+      return '<a class="btn btn-sm" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer" style="background:#fffbeb;border-color:#fcd34d;color:#78350f;text-decoration:none;">API-Key ↗</a> ';
+    }
+
     function renderClassification() {
       const q = document.getElementById('cls-search').value.trim().toLowerCase();
       const clsF = document.getElementById('cls-class').value;
+      const onlyUnf = document.getElementById('cls-unfiltered').checked;
+      const sortBy = document.getElementById('cls-sort').value;
       const list = state.providers.filter((p) => {
         const c = normalizeClass(p);
         if (clsF !== 'ALL' && c !== clsF) return false;
+        if (onlyUnf && !isUnfiltered(p)) return false;
         if (q) {
-          const hay = (p.name + ' ' + p.id + ' ' + (c === 'SCHWARZ' ? '' : p.url || '')).toLowerCase();
+          const hay = (p.name + ' ' + p.id + ' ' + (c === 'SCHWARZ' ? '' : p.url || '') + (isUnfiltered(p) ? ' unfiltered uncensored' : '')).toLowerCase();
           if (!hay.includes(q)) return false;
         }
         return true;
       });
-      document.getElementById('cls-count').textContent = 'Angezeigt: ' + list.length + ' / ' + state.providers.length;
+      if (sortBy === 'unfiltered_first') {
+        list.sort((a, b) => (isUnfiltered(b) ? 1 : 0) - (isUnfiltered(a) ? 1 : 0) || String(a.name || '').localeCompare(String(b.name || '')));
+      } else if (sortBy === 'name_asc') {
+        list.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+      }
+      const totalUnf = state.providers.filter(isUnfiltered).length;
+      document.getElementById('cls-count').textContent = 'Angezeigt: ' + list.length + ' / ' + state.providers.length + ' (' + totalUnf + ' Unfiltered)';
       document.getElementById('cls-tbody').innerHTML = list.map((p) => {
         const c = normalizeClass(p);
         const usable = isUsable(p);
+        const unfBadge = isUnfiltered(p) ? '<div><span class="tag-unfiltered">UNFILTERED</span></div>' : '';
         const urlShow = c === 'SCHWARZ' || p.illegal ? '[GESPERRT – Regel 1]' : (p.url || '—');
         return '<tr>'
-          + '<td class="mono cls-' + c + '">' + (c === 'GRUEN' ? 'GRÜN' : c) + '</td>'
+          + '<td class="mono cls-' + c + '">' + (c === 'GRUEN' ? 'GRÜN' : c) + unfBadge + '</td>'
           + '<td><strong>' + esc(p.name) + '</strong><div class="mono muted">' + esc(p.id) + '</div><div class="mono muted" style="word-break:break-all;font-size:11px;">' + esc(urlShow) + '</div></td>'
           + '<td class="mono" style="font-size:12px;">' + esc((p.kategorien || []).join(' · ')) + '</td>'
           + '<td class="mono" style="font-size:12px;">' + esc(p.auth_typ || '—') + '</td>'
           + '<td style="font-size:12px;">' + esc(p.verbindungsart || '—') + '<div class="muted">' + esc(p.classification_reason || p.classificationReason || '') + '</div></td>'
           + '<td style="text-align:right;white-space:nowrap;">'
             + (usable
-                ? '<button class="btn btn-sm" data-action="test" data-id="' + esc(p.id) + '">Testen</button> '
+                ? apiKeyBtnHtml(p)
+                  + '<button class="btn btn-sm" data-action="test" data-id="' + esc(p.id) + '">Testen</button> '
                   + '<button class="btn btn-sm btn-primary" data-action="use" data-id="' + esc(p.id) + '">Nutzen</button>'
                 : '<span class="mono muted">Gesperrt</span>')
           + '</td></tr>';
@@ -647,6 +751,7 @@ export function generateStandaloneGuiHtml(): string {
 
     function renderTests() {
       const q = document.getElementById('test-search').value.trim().toLowerCase();
+      const sortBy = document.getElementById('test-sort').value;
       let ok = 0, waf = 0, err = 0, tested = 0, usable = 0;
       const rows = [];
       for (const p of state.providers) {
@@ -658,31 +763,41 @@ export function generateStandaloneGuiHtml(): string {
         else if (['HTTP_ERROR','TIMEOUT','NETWORK_ERROR'].includes(r.status)) err++;
 
         const tf = state.testFilter;
+        if (tf === 'UNFILTERED' && !isUnfiltered(p)) continue;
         if (tf === 'EXECUTED' && !r.executed) continue;
         if (tf === 'OK' && !['OK','OK_API_PROBE','REDIRECT','AUTH_REQUIRED'].includes(r.status)) continue;
         if (tf === 'WAF' && r.status !== 'WAF_PROTECTED') continue;
         if (tf === 'ERR' && !['HTTP_ERROR','TIMEOUT','NETWORK_ERROR'].includes(r.status)) continue;
         if (tf === 'SKIP' && !String(r.status).startsWith('SKIPPED')) continue;
-        if (q && !(p.name + ' ' + p.id + ' ' + r.status + ' ' + r.note + ' ' + (r.url || '')).toLowerCase().includes(q)) continue;
+        if (q && !(p.name + ' ' + p.id + ' ' + r.status + ' ' + r.note + ' ' + (r.url || '') + (isUnfiltered(p) ? ' unfiltered uncensored' : '')).toLowerCase().includes(q)) continue;
         rows.push({ p, r });
+      }
+      if (sortBy === 'unfiltered_first') {
+        rows.sort((a, b) => (isUnfiltered(b.p) ? 1 : 0) - (isUnfiltered(a.p) ? 1 : 0) || String(a.p.name || '').localeCompare(String(b.p.name || '')));
+      } else if (sortBy === 'score_desc') {
+        rows.sort((a, b) => (b.r.healthScore ?? -1) - (a.r.healthScore ?? -1) || String(a.p.name || '').localeCompare(String(b.p.name || '')));
+      } else if (sortBy === 'name_asc') {
+        rows.sort((a, b) => String(a.p.name || '').localeCompare(String(b.p.name || '')));
       }
       document.getElementById('test-summary-bar').textContent =
         'Abdeckung: ' + tested + ' / ' + usable + '  ·  Erreichbar/Auth: ' + ok + '  ·  WAF: ' + waf + '  ·  Fehler: ' + err;
       document.getElementById('test-tbody').innerHTML = rows.map(({ p, r }) => {
         const c = normalizeClass(p);
         const u = isUsable(p);
+        const unfBadge = isUnfiltered(p) ? '<div><span class="tag-unfiltered">UNFILTERED</span></div>' : '';
         const pStrip = Array.isArray(r.phases)
           ? '<div class="mono" style="font-size:11px;margin-top:3px;">' + r.phases.map((ph, idx) => 'P' + (idx+1) + ':' + ph.status.toUpperCase()).join(' ') + '</div>'
           : '';
         return '<tr>'
-          + '<td class="mono cls-' + c + '">' + (c === 'GRUEN' ? 'GRÜN' : c) + '</td>'
+          + '<td class="mono cls-' + c + '">' + (c === 'GRUEN' ? 'GRÜN' : c) + unfBadge + '</td>'
           + '<td><strong>' + esc(p.name) + '</strong><div class="mono muted">' + esc(p.id) + '</div></td>'
           + '<td><span class="mono ' + statusClass(r.status) + '">' + esc(r.status) + '</span>' + pStrip + '</td>'
           + '<td class="mono" style="font-size:12px;">' + (r.healthScore !== undefined ? '<strong>' + r.healthScore + '/100</strong><br/>' : '') + 'HTTP ' + esc(r.http_code || '-') + (r.latencyMs ? ' · ' + r.latencyMs + 'ms' : '') + '</td>'
           + '<td style="font-size:12px;">' + esc(r.note || '—') + '<div class="mono muted" style="font-size:11px;word-break:break-all;">' + esc(c === 'SCHWARZ' ? '[GESPERRT]' : (r.url || '')) + '</div></td>'
           + '<td style="text-align:right;white-space:nowrap;">'
             + (u
-                ? '<button class="btn btn-sm" data-action="test" data-id="' + esc(p.id) + '">Testen</button> '
+                ? apiKeyBtnHtml(p)
+                  + '<button class="btn btn-sm" data-action="test" data-id="' + esc(p.id) + '">Testen</button> '
                   + '<button class="btn btn-sm btn-primary" data-action="use" data-id="' + esc(p.id) + '">Nutzen</button>'
                 : '<span class="mono muted">Gesperrt</span>')
           + '</td></tr>';
@@ -1054,19 +1169,108 @@ export function generateStandaloneGuiHtml(): string {
         : (base + ' · Kein direkter OpenAI-/chat/completions-Endpunkt');
     }
 
+    const BRIDGE_VERIFIED_MODELS = {
+      qwengate: [
+        { id: 'qwen3.7-plus', note: 'Standard · Live chat.qwen.ai' },
+        { id: 'qwen3.8-max', note: 'Flaggschiff · Live chat.qwen.ai' },
+      ],
+      'openai-api-server-via-codex': [
+        { id: 'gpt-5.4-mini', note: 'Standard · Schnell' },
+        { id: 'gpt-5.4', note: 'Allround' },
+        { id: 'gpt-5.3-codex', note: 'Codex' },
+        { id: 'gpt-5.3-codex-spark', note: 'Codex Spark' },
+        { id: 'gpt-5.2-codex', note: 'Codex' },
+        { id: 'gpt-5.2', note: 'Allround' },
+        { id: 'gpt-5.1-codex-max', note: 'Codex Max' },
+        { id: 'gpt-5.1-codex-mini', note: 'Codex Mini' },
+        { id: 'gpt-5.1', note: 'Basis' },
+        { id: 'gpt-5.5', note: 'Erweitert' },
+        { id: 'gpt-5.6-sol', note: 'GPT-5.6 Sol' },
+        { id: 'gpt-5.6-terra', note: 'GPT-5.6 Terra' },
+        { id: 'gpt-5.6-luna', note: 'GPT-5.6 Luna' },
+      ],
+      'catgpt-gateway': [
+        { id: 'claude-browser', note: 'Standard · PROVIDER=claude' },
+        { id: 'catgpt-browser', note: 'ChatGPT-Modus · PROVIDER=chatgpt' },
+      ],
+      'webai-to-api': [
+        { id: 'gemini-3-flash', note: 'Standard · Flash' },
+        { id: 'gemini-3-flash-thinking', note: 'Thinking' },
+        { id: 'gemini-3-pro', note: 'Pro' },
+      ],
+      freedeepseekapi: [
+        { id: 'deepseek-chat', note: 'Standard · Unified' },
+        { id: 'deepseek-reasoner', note: 'DeepThink' },
+        { id: 'deepseek-chat-search', note: 'Mit Web-Suche' },
+        { id: 'deepseek-reasoner-search', note: 'DeepThink + Web-Suche' },
+        { id: 'deepseek-v4.1-flash', note: 'V4.1 Flash' },
+        { id: 'deepseek-v4-flash', note: 'V4 Flash' },
+      ],
+      'grok-com-to-openai': [
+        { id: 'grok-fast', note: 'Standard · Schnell' },
+        { id: 'grok-auto', note: 'Auto-Routing' },
+        { id: 'grok-expert', note: 'Tiefes Reasoning' },
+        { id: 'grok-heavy', note: 'Multi-Agent' },
+        { id: 'grok-build', note: 'Coding / Architektur' },
+      ],
+      duck2api: [
+        { id: 'gpt-5.4-mini', note: 'Standard · OpenAI (Gratis)' },
+        { id: 'gpt-6-luna', note: 'OpenAI (Gratis)' },
+        { id: 'claude-haiku-5-5', note: 'Anthropic (Gratis)' },
+        { id: 'mistral-small-2603', note: 'Mistral (Gratis)' },
+        { id: 'tinfoil/gpt-oss-120b', note: 'Tinfoil TEE (Gratis)' },
+        { id: 'tinfoil/gemma4-31b', note: 'Tinfoil TEE (Gratis)' },
+      ],
+    };
+
+    const BRIDGE_EXCLUDED_MODELS = {
+      freedeepseekapi: new Set(['deepseek-v3', 'deepseek-r1', 'deepseek-expert', 'deepseek-v4-pro', 'deepseek-vision']),
+      duck2api: new Set(['gpt-5.4-nano', 'claude-haiku-4-5', 'mistral-small', 'gpt-5.6-terra', 'claude-sonnet-5-5', 'gpt-5.6-sol', 'claude-opus-5-5']),
+    };
+
+    function resolveBridgeModels(bridgeId) {
+      const curated = BRIDGE_VERIFIED_MODELS[bridgeId] || [];
+      const live = state.bridgeLiveModels.get(bridgeId);
+      if (Array.isArray(live) && live.length > 0) {
+        const excl = BRIDGE_EXCLUDED_MODELS[bridgeId];
+        const byId = new Map(curated.map((m) => [m.id, m]));
+        const out = [];
+        const seen = new Set();
+        for (const raw of live) {
+          const id = String(raw || '').trim();
+          if (!id || id.toLowerCase() === 'default' || seen.has(id) || (excl && excl.has(id))) continue;
+          seen.add(id);
+          const match = byId.get(id);
+          out.push(match ? { id: match.id, note: match.note } : { id, note: 'Live /v1/models' });
+        }
+        if (out.length > 0) return { list: out, isLive: true };
+      }
+      return { list: curated, isLive: false };
+    }
+
     function defaultChatModel(providerId, bridgeId) {
       const bid = String(bridgeId || '').toLowerCase();
-      if (bid === 'grok-com-to-openai') return 'grok-fast';
-      if (bid === 'duck2api') return 'gpt-5.4-mini';
-      if (bid === 'freedeepseekapi') return 'deepseek-chat';
-      if (bid === 'openai-api-server-via-codex') return 'gpt-5.4-mini';
-      if (bid === 'catgpt-gateway') return 'gpt-4o';
-      if (bid === 'webai-to-api') return 'gemini-2.5-flash';
+      if (bid && BRIDGE_VERIFIED_MODELS[bid] && BRIDGE_VERIFIED_MODELS[bid][0]) {
+        return BRIDGE_VERIFIED_MODELS[bid][0].id;
+      }
       const pid = String(providerId || '').toLowerCase();
       if (pid.includes('pollinations')) return 'openai-fast';
       if (pid.includes('ovh')) return 'gpt-oss-20b';
       if (pid === 'unrestrictable-ai') return 'abliterated-model';
       if (pid === 'obscurify-ai') return 'abliteration-ai/abliterated-model';
+      if (pid === 'openuncensored') return 'abliterated-model';
+      if (pid === 'magmarouter') return 'glm-5.3-xploded';
+      if (pid === 'mancer-ai') return 'mythomax';
+      if (pid === 'redpill-ai') return 'phala/deepseek-v4.1-flash-1017-uncensored';
+      if (pid === 'tinfoil-sh') return 'deepseek-v4-1-flash';
+      if (pid === 'gab-ai') return 'auto';
+      if (pid === 'ablit-app') return 'ablit-flash';
+      if (pid === 'abliteration-ai') return 'abliterated-model';
+      if (pid === 'uplinkswitch') return 'abliterated-model';
+      if (pid === 'api-airforce') return 'llama-instant';
+      if (pid === 'electronhub') return 'gemma-4-uncensored:free';
+      if (pid === 'chutes') return 'Qwen/Qwen3.8-27B-TEE';
+      if (pid === 'aionlabs') return 'aion-labs/aion-2.0';
       return 'default';
     }
 
@@ -1076,23 +1280,69 @@ export function generateStandaloneGuiHtml(): string {
       document.getElementById('chat-provider-wrap').classList.toggle('hidden', mode !== 'provider');
       const baseEl = document.getElementById('chat-base');
       const modelEl = document.getElementById('chat-model');
+      const brModelSel = document.getElementById('chat-bridge-model');
+      const brModelSingle = document.getElementById('chat-bridge-model-single');
+      const modelLabel = document.getElementById('chat-model-label');
+      const noteEl = document.getElementById('chat-models-note');
       baseEl.readOnly = mode === 'bridge';
       if (mode === 'bridge') {
         const bid = document.getElementById('chat-bridge').value;
         const b = state.bridges.find((x) => x.bridge_id === bid);
         if (b && b.port) baseEl.value = 'http://127.0.0.1:' + b.port + '/v1';
-        modelEl.value = defaultChatModel('', bid);
-      } else if (mode === 'provider') {
-        const pid = document.getElementById('chat-provider').value;
-        const p = state.providers.find((x) => x.id === pid);
-        if (p) baseEl.value = defaultApiBase(p, classifyConnKind(p));
-        modelEl.value = defaultChatModel(pid, '');
-      } else if (mode === 'litellm') {
-        baseEl.value = 'http://127.0.0.1:4000/v1';
-        modelEl.value = 'default';
+        const { list, isLive } = resolveBridgeModels(bid);
+        modelLabel.textContent = 'Verifiziertes Bridge-Modell';
+        if (list.length > 0) {
+          modelEl.classList.add('hidden');
+          const curVal = modelEl.value;
+          const activeVal = list.some((m) => m.id === curVal) ? curVal : list[0].id;
+          modelEl.value = activeVal;
+          if (list.length > 1) {
+            brModelSel.innerHTML = list.map((m) =>
+              '<option value="' + esc(m.id) + '">' + esc(m.note ? (m.id + ' — ' + m.note) : m.id) + '</option>'
+            ).join('');
+            brModelSel.value = activeVal;
+            brModelSel.classList.remove('hidden');
+            brModelSingle.classList.add('hidden');
+          } else {
+            brModelSel.classList.add('hidden');
+            brModelSingle.textContent = list[0].note ? (list[0].id + ' — ' + list[0].note) : list[0].id;
+            brModelSingle.classList.remove('hidden');
+          }
+          noteEl.textContent = (isLive ? 'Exklusiv verifiziert (Live /v1/models · ' : 'Exklusiv verifiziert (Bridge-Quellcode · ') + list.length + ' aktiv)';
+        } else {
+          brModelSel.classList.add('hidden');
+          brModelSingle.classList.add('hidden');
+          modelEl.classList.remove('hidden');
+          modelEl.value = defaultChatModel('', bid);
+        }
       } else {
-        if (!/^https?:\\/\\/(127\\.0\\.0\\.1|localhost)/i.test(baseEl.value)) {
-          baseEl.value = 'http://127.0.0.1:11434/v1';
+        modelLabel.textContent = 'Modell-ID';
+        brModelSel.classList.add('hidden');
+        brModelSingle.classList.add('hidden');
+        modelEl.classList.remove('hidden');
+        noteEl.textContent = '';
+        if (mode === 'provider') {
+          const pid = document.getElementById('chat-provider').value;
+          const p = state.providers.find((x) => x.id === pid);
+          if (p) baseEl.value = defaultApiBase(p, classifyConnKind(p));
+          modelEl.value = defaultChatModel(pid, '');
+          const keyLink = document.getElementById('chat-api-key-link');
+          const keyUrl = p ? resolveApiKeyPage(p) : null;
+          if (keyLink) {
+            if (keyUrl) {
+              keyLink.href = keyUrl;
+              keyLink.classList.remove('hidden');
+            } else {
+              keyLink.classList.add('hidden');
+            }
+          }
+        } else if (mode === 'litellm') {
+          baseEl.value = 'http://127.0.0.1:4000/v1';
+          modelEl.value = 'default';
+        } else {
+          if (!/^https?:\\/\\/(127\\.0\\.0\\.1|localhost)/i.test(baseEl.value)) {
+            baseEl.value = 'http://127.0.0.1:11434/v1';
+          }
         }
       }
       updateChatHeader();
@@ -1105,13 +1355,14 @@ export function generateStandaloneGuiHtml(): string {
         '<option value="' + esc(b.bridge_id) + '">' + esc(b.zielprovider + ' — ' + b.bridge_id + ' (:' + b.port + ')') + '</option>'
       ).join('');
       const prSel = document.getElementById('chat-provider');
-      const usablePr = state.providers.filter((p) => isUsable(p) && classifyConnKind(p).supportsOpenAi);
+      const onlyUnfChat = Boolean(document.getElementById('chat-only-unfiltered')?.checked);
+      const usablePr = state.providers.filter((p) => isUsable(p) && classifyConnKind(p).supportsOpenAi && (!onlyUnfChat || isUnfiltered(p)));
       usablePr.sort((a, b) => {
-        const score = (x) => (normalizeClass(x) === 'GRUEN' ? 0 : 10) + (x.auth_typ === 'keine' ? 0 : 2);
+        const score = (x) => (onlyUnfChat && isUnfiltered(x) ? 0 : 0) + (normalizeClass(x) === 'GRUEN' ? 0 : 10) + (x.auth_typ === 'keine' ? 0 : 2);
         return score(a) - score(b) || String(a.name || '').localeCompare(String(b.name || ''));
       });
       prSel.innerHTML = usablePr.map((p) =>
-        '<option value="' + esc(p.id) + '">[' + esc(normalizeClass(p)) + (p.auth_typ === 'keine' ? ' · Kein Key' : '') + '] ' + esc(p.name) + '</option>'
+        '<option value="' + esc(p.id) + '">[' + (isUnfiltered(p) ? 'UNFILTERED · ' : '') + esc(normalizeClass(p)) + (p.auth_typ === 'keine' ? ' · Kein Key' : '') + '] ' + esc(p.name) + '</option>'
       ).join('');
       syncChatModeUI();
     }
@@ -1169,12 +1420,18 @@ export function generateStandaloneGuiHtml(): string {
         const data = await res.json();
         const dl = document.getElementById('chat-model-list');
         if (data.ok && Array.isArray(data.models) && data.models.length > 0) {
-          dl.innerHTML = data.models.map((m) => '<option value="' + esc(m) + '"></option>').join('');
-          document.getElementById('chat-model').value = data.models[0];
-          note.textContent = data.models.length + ' Modelle geladen.';
-          updateChatHeader();
+          if (mode === 'bridge') {
+            const bid = document.getElementById('chat-bridge').value;
+            state.bridgeLiveModels.set(bid, data.models);
+            syncChatModeUI();
+          } else {
+            dl.innerHTML = data.models.map((m) => '<option value="' + esc(m) + '"></option>').join('');
+            document.getElementById('chat-model').value = data.models[0];
+            note.textContent = data.models.length + ' Modelle geladen.';
+            updateChatHeader();
+          }
         } else {
-          note.textContent = data.error || 'Keine Modelle geliefert (Modell-ID manuell eintragen).';
+          note.textContent = data.error || (mode === 'bridge' ? 'Bridge antwortet nicht — zeige verifizierte Standardmodelle.' : 'Keine Modelle geliefert (Modell-ID manuell eintragen).');
         }
       } catch (e) {
         note.textContent = 'Fehler: ' + (e && e.message ? e.message : String(e));
@@ -1231,6 +1488,8 @@ export function generateStandaloneGuiHtml(): string {
     });
     document.getElementById('cls-search').addEventListener('input', renderClassification);
     document.getElementById('cls-class').addEventListener('change', renderClassification);
+    document.getElementById('cls-unfiltered').addEventListener('change', renderClassification);
+    document.getElementById('cls-sort').addEventListener('change', renderClassification);
     ['cls-tbody', 'test-tbody'].forEach((tid) => {
       document.getElementById(tid).addEventListener('click', (e) => {
         const btn = e.target.closest('button[data-action]');
@@ -1242,6 +1501,8 @@ export function generateStandaloneGuiHtml(): string {
       });
     });
     document.getElementById('test-search').addEventListener('input', renderTests);
+    document.getElementById('test-sort').addEventListener('change', renderTests);
+    document.getElementById('chat-only-unfiltered').addEventListener('change', populateChatSelectors);
     document.querySelectorAll('[data-tfilter]').forEach((b) => b.addEventListener('click', () => {
       state.testFilter = b.dataset.tfilter; renderTests();
     }));
@@ -1303,6 +1564,10 @@ export function generateStandaloneGuiHtml(): string {
     });
     document.getElementById('chat-mode').addEventListener('change', syncChatModeUI);
     document.getElementById('chat-bridge').addEventListener('change', syncChatModeUI);
+    document.getElementById('chat-bridge-model').addEventListener('change', (e) => {
+      document.getElementById('chat-model').value = e.target.value;
+      updateChatHeader();
+    });
     document.getElementById('chat-provider').addEventListener('change', syncChatModeUI);
     document.getElementById('chat-base').addEventListener('input', updateChatHeader);
     document.getElementById('chat-model').addEventListener('input', updateChatHeader);
@@ -1919,7 +2184,7 @@ const server = http.createServer(async (req, res) => {
           const alt = await fetchTimeout(baseUrl.replace(/\\/openai$/, '') + '/models', { method: 'GET', headers }, 10000);
           if (alt.ok) r = alt;
         }
-        const txt = (await r.text()).slice(0, 120000);
+        const txt = (await r.text()).slice(0, 1500000);
         let parsed = null; try { parsed = JSON.parse(txt); } catch {}
         const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed?.models) ? parsed.models : [];
         const nonChatRe = /(whisper|tts|nvr-tts|solaria|embed|bge-|rerank|stable-diffusion|sdxl|flux|dall-e|moderation|transcribe|\\basr\\b|\\bstt\\b|\\bocr\\b)/i;
@@ -2367,7 +2632,7 @@ class Handler(BaseHTTPRequestHandler):
                 if pth == "/api/chat/models":
                     req = urllib.request.Request(f"{base_or_err}/models", method="GET", headers=hdrs)
                     with urllib.request.urlopen(req, timeout=10) as r:
-                        parsed = json.loads(r.read(120000).decode("utf-8", errors="replace"))
+                        parsed = json.loads(r.read(1500000).decode("utf-8", errors="replace"))
                         items = parsed.get("data") or parsed.get("models") or []
                         models = [x["id"] if isinstance(x, dict) and "id" in x else (x.get("name") if isinstance(x, dict) else str(x)) for x in items][:100]
                         self._send_json(200, {"ok": True, "httpStatus": r.status, "latencyMs": int((time.monotonic() - t0) * 1000), "models": models})

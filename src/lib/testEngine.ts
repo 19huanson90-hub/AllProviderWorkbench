@@ -632,6 +632,24 @@ function resolveDefaultEndpoint(
     if (idLower === 'venice-ai' || idLower.includes('venice')) {
       return { base: 'https://api.venice.ai/api/v1', note: null };
     }
+    if (idLower === 'chutes' || idLower.includes('chutes')) {
+      return { base: 'https://llm.chutes.ai/v1', note: null };
+    }
+    if (idLower === 'aionlabs' || idLower.includes('aionlabs')) {
+      return { base: 'https://api.aionlabs.ai/v1', note: null };
+    }
+    if (idLower === 'api-airforce' || idLower.includes('airforce')) {
+      return { base: 'https://api.airforce/v1', note: '23 kostenlose unmoderierte Modelle (Free-API-Key auf api.airforce erforderlich).' };
+    }
+    if (idLower === 'electronhub' || idLower.includes('electronhub')) {
+      return { base: 'https://api.electronhub.ai/v1', note: 'Enthält u. a. gemma-4-uncensored:free (Free-Plan-Key erforderlich).' };
+    }
+    if (idLower === 'uplinkswitch') {
+      return { base: 'https://api.uplinkswitch.com/v1', note: null };
+    }
+    if (idLower === 'nanogpt' || idLower.includes('nano-gpt')) {
+      return { base: 'https://nano-gpt.com/api/v1', note: null };
+    }
     if (idLower.includes('google-ai-studio') || idLower === 'gemini-api') {
       return { base: 'https://generativelanguage.googleapis.com/v1beta/openai', note: null };
     }
@@ -829,5 +847,114 @@ print([m.id for m in client.models.list().data[:10]])`;
     powershell,
     python,
   };
+}
+
+export interface ProviderApiKeyPage {
+  url: string;
+  label: string;
+  isDirectKeyConsole: boolean;
+}
+
+/**
+ * Live-verified direct API-key / developer-console URLs (checked via HTTP probe).
+ * Never contains unverified guessed paths or SCHWARZ/illegal URLs.
+ */
+const VERIFIED_API_KEY_CONSOLES: ReadonlyArray<{
+  match: (idLower: string, urlLower: string) => boolean;
+  url: string;
+}> = [
+  { match: (id, u) => id === 'chutes' || u.includes('chutes.ai'), url: 'https://chutes.ai/app/settings/api-keys' },
+  { match: (id, u) => id.includes('openrouter') || u.includes('openrouter.ai'), url: 'https://openrouter.ai/settings/keys' },
+  { match: (id, u) => id.includes('groq') || u.includes('groq.com'), url: 'https://console.groq.com/keys' },
+  { match: (id, u) => id.includes('cerebras') || u.includes('cerebras.ai'), url: 'https://cloud.cerebras.ai/' },
+  { match: (id, u) => id.includes('together') || u.includes('together.ai') || u.includes('together.xyz'), url: 'https://api.together.xyz/settings/api-keys' },
+  { match: (id, u) => id === 'mistral-la-plateforme' || (id.includes('mistral') && u.includes('mistral.ai')), url: 'https://console.mistral.ai/api-keys' },
+  { match: (id, u) => id === 'deepseek' || id.includes('deepseek-api') || u.includes('platform.deepseek.com'), url: 'https://platform.deepseek.com/api_keys' },
+  { match: (id, u) => id.includes('fireworks') || u.includes('fireworks.ai'), url: 'https://app.fireworks.ai/account/api-keys' },
+  { match: (id, u) => id.includes('sambanova') || u.includes('sambanova.ai'), url: 'https://cloud.sambanova.ai/apis' },
+  { match: (id, u) => id.includes('siliconflow') || u.includes('siliconflow.com'), url: 'https://cloud.siliconflow.com/account/ak' },
+  { match: (id, u) => id.includes('google-ai-studio') || id === 'gemini-api' || u.includes('aistudio.google.com'), url: 'https://aistudio.google.com/apikey' },
+  { match: (id, u) => id === 'openai' || id === 'openai-api' || u.includes('platform.openai.com'), url: 'https://platform.openai.com/api-keys' },
+  { match: (id, u) => id.includes('anthropic') || u.includes('anthropic.com') || u.includes('platform.claude.com'), url: 'https://platform.claude.com/settings/keys' },
+  { match: (id, u) => id === 'xai' || id.includes('xai-api') || u.includes('console.x.ai') || u.includes('x.ai/api'), url: 'https://console.x.ai/' },
+  { match: (id, u) => id.includes('cohere') && !id.includes('labs'), url: 'https://dashboard.cohere.com/api-keys' },
+  { match: (id, u) => id.includes('huggingface') || u.includes('huggingface.co'), url: 'https://huggingface.co/settings/tokens' },
+  { match: (id, u) => id.includes('github-models') || u.includes('models.github.ai'), url: 'https://github.com/settings/tokens' },
+  { match: (id, u) => id.includes('nvidia') || u.includes('build.nvidia.com'), url: 'https://build.nvidia.com/settings/api-keys' },
+  { match: (id, u) => id.includes('cloudflare') || u.includes('workers.ai') || u.includes('developers.cloudflare.com'), url: 'https://dash.cloudflare.com/profile/api-tokens' },
+  { match: (id, u) => id.includes('perplexity') || u.includes('perplexity.ai'), url: 'https://console.perplexity.ai/' },
+  { match: (id, u) => id.includes('deepinfra') || u.includes('deepinfra.com'), url: 'https://deepinfra.com/dash/keys' },
+  { match: (id, u) => id.includes('novita') || u.includes('novita.ai'), url: 'https://novita.ai/settings/key-management' },
+  { match: (id, u) => id.includes('hyperbolic') || u.includes('hyperbolic.xyz') || u.includes('hyperbolic.ai'), url: 'https://app.hyperbolic.ai/settings' },
+  { match: (id, u) => id.includes('nebius') || u.includes('nebius.com'), url: 'https://tokenfactory.nebius.com/settings/api-keys' },
+  { match: (id, u) => id === 'venice-ai' || u.includes('venice.ai'), url: 'https://venice.ai/settings/api' },
+  { match: (id, u) => id === 'nanogpt' || u.includes('nano-gpt.com'), url: 'https://nano-gpt.com/api' },
+  { match: (id, u) => id === 'mancer-ai' || u.includes('mancer.tech'), url: 'https://mancer.tech/dashboard' },
+  { match: (id, u) => id === 'ppq-ai' || u.includes('ppq.ai'), url: 'https://ppq.ai/api-docs' },
+  { match: (id, u) => id === 'nous-research' || u.includes('nousresearch.com'), url: 'https://portal.nousresearch.com/api-keys' },
+  { match: (id, u) => id === 'tinfoil-sh' || u.includes('tinfoil.sh'), url: 'https://dash.tinfoil.sh/' },
+  { match: (id, u) => id === 'gab-ai' || u.includes('gab.ai'), url: 'https://gab.ai/settings' },
+  { match: (id, u) => id.includes('baseten') || u.includes('baseten.co'), url: 'https://app.baseten.co/settings/account/api_keys' },
+  { match: (id, u) => id.includes('replicate') || u.includes('replicate.com'), url: 'https://replicate.com/account/api-tokens' },
+  { match: (id, u) => id.includes('zhipu') || u.includes('bigmodel.cn'), url: 'https://open.bigmodel.cn/usercenter/apikeys' },
+  { match: (id, u) => id.includes('moonshot') || id.includes('kimi') || u.includes('moonshot.ai') || u.includes('kimi.ai'), url: 'https://platform.kimi.ai/console/api-keys' },
+  { match: (id, u) => id.includes('alibaba') || id.includes('dashscope') || u.includes('alibabacloud.com'), url: 'https://modelstudio.console.alibabacloud.com/' },
+  { match: (id, u) => id === 'poe' || id.includes('poe-api') || u.includes('poe.com'), url: 'https://poe.com/api/keys' },
+  { match: (id, u) => id === 'api-airforce' || u.includes('api.airforce'), url: 'https://api.airforce' },
+  { match: (id, u) => id === 'electronhub' || u.includes('electronhub.ai'), url: 'https://www.electronhub.ai' },
+  { match: (id, u) => id === 'uplinkswitch' || u.includes('uplinkswitch.com'), url: 'https://uplinkswitch.com' },
+];
+
+export function providerNeedsApiKey(provider: ClassifiedProvider): boolean {
+  if (!isUsableGreenOrGelb(provider)) return false;
+  return provider.auth_typ === 'api_key' || provider.auth_typ === 'oauth';
+}
+
+/**
+ * Resolves a safe external HTTPS link directly to the provider's API-key / developer page.
+ * Returns null for providers that don't require an API key, blocked (ROT/SCHWARZ) entries,
+ * or entries without any valid external HTTP(S) URL.
+ */
+export function resolveProviderApiKeyPage(
+  provider: ClassifiedProvider
+): ProviderApiKeyPage | null {
+  if (!providerNeedsApiKey(provider)) return null;
+
+  const idLower = provider.id.toLowerCase();
+  const urlLower = (provider.url || '').trim().toLowerCase();
+  const isLocalOnly =
+    provider.kategorien.includes('lokal_self_hosted') &&
+    (!provider.url || /localhost|127\.0\.0\.1/i.test(provider.url));
+
+  if (!isLocalOnly) {
+    for (const entry of VERIFIED_API_KEY_CONSOLES) {
+      if (entry.match(idLower, urlLower)) {
+        return {
+          url: entry.url,
+          label: 'API-Key-Seite',
+          isDirectKeyConsole: true,
+        };
+      }
+    }
+  }
+
+  const rawUrl = (provider.url || '').trim();
+  if (/^https?:\/\//i.test(rawUrl)) {
+    try {
+      const parsed = new URL(rawUrl);
+      const host = parsed.hostname.toLowerCase();
+      if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
+        return {
+          url: rawUrl,
+          label: 'API-Seite',
+          isDirectKeyConsole: false,
+        };
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 

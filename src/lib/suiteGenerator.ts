@@ -75,6 +75,7 @@ export function generateClassificationJson(
       id: p.id,
       name: p.name,
       security_class: p.securityClassLabel,
+      is_unfiltered: p.isUnfiltered,
       classification_reason: p.classificationReason,
       url: p.securityClass === 'SCHWARZ' || p.isIllegal ? '[GESPERRT – NUR DOKUMENTATION]' : p.url,
       kategorien: p.kategorien,

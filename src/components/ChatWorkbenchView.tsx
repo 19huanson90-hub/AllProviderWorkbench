@@ -9,6 +9,7 @@ import {
   Copy,
   ExternalLink,
   FileText,
+  Flame,
   GitMerge,
   Globe,
   Image as ImageIcon,
@@ -30,10 +31,13 @@ import {
   Zap,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
-import { DUCK2API_MODELS, resolveDefaultChatModel, type ChatTargetType } from '../lib/chatEngine.ts';
+import {
+  resolveDefaultChatModel,
+  resolveVerifiedBridgeModelOptions,
+  type ChatTargetType,
+} from '../lib/chatEngine.ts';
 import {
   GROK_BRIDGE_CAPABILITIES,
-  GROK_BRIDGE_MODELS,
   buildAiRefineMetaPrompt,
   buildLocalImprovedPrompt,
   createDefaultWorkspace,
@@ -47,7 +51,11 @@ import {
   type NotebooksWorkspace,
   type PromptRefineMode,
 } from '../lib/notebookEngine.ts';
-import { buildConnectionSnippets, isUsableGreenOrGelb } from '../lib/testEngine.ts';
+import {
+  buildConnectionSnippets,
+  isUsableGreenOrGelb,
+  resolveProviderApiKeyPage,
+} from '../lib/testEngine.ts';
 import type {
   BridgeRuntimeState,
   BridgeSelectionEntry,
@@ -55,7 +63,7 @@ import type {
 } from '../lib/types.ts';
 import { ChatMarkdownMessage } from './ChatMarkdownMessage.tsx';
 import { NotebookSidebarPanel } from './NotebookSidebarPanel.tsx';
-import { SecurityClassTag } from './SecurityIndicator.tsx';
+import { SecurityClassTag, UnfilteredTag } from './SecurityIndicator.tsx';
 
 export interface ChatTargetPreset {
   targetType: ChatTargetType;
@@ -203,6 +211,8 @@ export function ChatWorkbenchView({
   const [selectedProviderId, setSelectedProviderId] = useState<string>(defaultProviderId);
   const [providerSearch, setProviderSearch] = useState<string>('');
   const [onlyDirectRestProviders, setOnlyDirectRestProviders] = useState<boolean>(true);
+  const [onlyUnfilteredProviders, setOnlyUnfilteredProviders] = useState<boolean>(false);
+  const [sortUnfilteredFirst, setSortUnfilteredFirst] = useState<boolean>(false);
   const [allowManualNonRestOverride, setAllowManualNonRestOverride] = useState<boolean>(false);
   const [endpointUrl, setEndpointUrl] = useState<string>(() => {
     const b = allowlistedBridges.find((x) => x.bridge_id === defaultBridgeId) || allowlistedBridges[0];
@@ -368,6 +378,25 @@ export function ChatWorkbenchView({
 
   const isGrokBridge = targetType === 'bridge' && selectedBridgeId === 'grok-com-to-openai';
 
+  const bridgeModelOptions = useMemo(
+    () =>
+      targetType === 'bridge'
+        ? resolveVerifiedBridgeModelOptions(selectedBridgeId, availableModels)
+        : [],
+    [targetType, selectedBridgeId, availableModels]
+  );
+
+  const bridgeModelsAreLive =
+    targetType === 'bridge' && availableModels.length > 0 && bridgeModelOptions.length > 0;
+
+  // Enforce exclusivity: for bridges, modelId must always be one of the verified active models
+  useEffect(() => {
+    if (targetType !== 'bridge' || bridgeModelOptions.length === 0) return;
+    if (!bridgeModelOptions.some((m) => m.id === modelId)) {
+      setModelId(bridgeModelOptions[0].id);
+    }
+  }, [targetType, bridgeModelOptions, modelId]);
+
   const activeProvider = useMemo(
     () => usableProviders.find((p) => p.id === selectedProviderId) ?? null,
     [usableProviders, selectedProviderId]
@@ -376,24 +405,55 @@ export function ChatWorkbenchView({
     () => (activeProvider ? buildConnectionSnippets(activeProvider) : null),
     [activeProvider]
   );
+  const activeProviderKeyPage = useMemo(
+    () => (activeProvider ? resolveProviderApiKeyPage(activeProvider) : null),
+    [activeProvider]
+  );
+
+  const unfilteredUsableCount = useMemo(
+    () =>
+      usableProviders.filter((p) => {
+        if (!p.isUnfiltered) return false;
+        if (onlyDirectRestProviders) {
+          return providerMetaMap.get(p.id)?.supportsOpenAi ?? false;
+        }
+        return true;
+      }).length,
+    [usableProviders, onlyDirectRestProviders, providerMetaMap]
+  );
 
   const filteredProviders = useMemo(() => {
     const q = providerSearch.trim().toLowerCase();
-    return usableProviders
-      .filter((p) => {
-        if (onlyDirectRestProviders) {
-          const meta = providerMetaMap.get(p.id);
-          if (!meta?.supportsOpenAi && p.id !== selectedProviderId) return false;
-        }
-        if (!q) return true;
-        return (
-          p.name.toLowerCase().includes(q) ||
-          p.id.toLowerCase().includes(q) ||
-          p.url.toLowerCase().includes(q)
-        );
-      })
-      .slice(0, 90);
-  }, [usableProviders, providerSearch, onlyDirectRestProviders, providerMetaMap, selectedProviderId]);
+    const list = usableProviders.filter((p) => {
+      if (onlyUnfilteredProviders && !p.isUnfiltered) return false;
+      if (onlyDirectRestProviders) {
+        const meta = providerMetaMap.get(p.id);
+        if (!meta?.supportsOpenAi && p.id !== selectedProviderId) return false;
+      }
+      if (!q) return true;
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.id.toLowerCase().includes(q) ||
+        p.url.toLowerCase().includes(q) ||
+        (p.isUnfiltered && ('unfiltered'.includes(q) || 'uncensored'.includes(q)))
+      );
+    });
+    if (sortUnfilteredFirst || onlyUnfilteredProviders) {
+      list.sort((a, b) => {
+        if (a.isUnfiltered !== b.isUnfiltered) return a.isUnfiltered ? -1 : 1;
+        return a.name.localeCompare(b.name, 'de');
+      });
+    }
+    return list.slice(0, 90);
+  }, [
+    usableProviders,
+    providerSearch,
+    onlyDirectRestProviders,
+    onlyUnfilteredProviders,
+    sortUnfilteredFirst,
+    providerMetaMap,
+    selectedProviderId,
+  ]);
 
   const fetchBridgeHealthz = useCallback(async (bridgeId: string) => {
     if (!bridgeId) return;
@@ -407,11 +467,12 @@ export function ChatWorkbenchView({
       };
       setBridgeHealthz(json.healthz || (json.ok ? { ok: true } : null));
       if (Array.isArray(json.models) && json.models.length > 0) {
-        setAvailableModels(json.models);
+        const verifiedLive = resolveVerifiedBridgeModelOptions(bridgeId, json.models).map((m) => m.id);
+        setAvailableModels(verifiedLive);
         setModelId((cur) => {
           const trimmed = cur.trim();
-          if (!trimmed || trimmed === 'default' || !json.models!.includes(trimmed)) {
-            return json.models![0];
+          if (!trimmed || trimmed === 'default' || !verifiedLive.includes(trimmed)) {
+            return verifiedLive[0] || resolveDefaultChatModel(undefined, bridgeId);
           }
           return cur;
         });
@@ -680,21 +741,31 @@ export function ChatWorkbenchView({
             : [];
       const skippedNonChat = Array.isArray(json.nonChatModels) ? json.nonChatModels.length : 0;
       if (json.ok && chatOnly.length > 0) {
-        setAvailableModels(chatOnly);
-        if (!chatOnly.includes(modelId)) {
-          setModelId(chatOnly[0]);
+        const effectiveModels =
+          targetType === 'bridge'
+            ? resolveVerifiedBridgeModelOptions(selectedBridgeId, chatOnly).map((m) => m.id)
+            : chatOnly;
+        setAvailableModels(effectiveModels);
+        if (effectiveModels.length > 0 && !effectiveModels.includes(modelId)) {
+          setModelId(effectiveModels[0]);
         }
         setModelsNote({
           ok: true,
-          text: `${chatOnly.length} Chat-Modelle geladen (${json.latencyMs ?? 0} ms)${
-            skippedNonChat > 0 ? ` · ${skippedNonChat} Nicht-Chat-Modelle (TTS/Whisper/Embed) ausgeblendet` : ''
-          }.`,
+          text:
+            targetType === 'bridge'
+              ? `${effectiveModels.length} aktive Bridge-Modelle live verifiziert (${json.latencyMs ?? 0} ms).`
+              : `${effectiveModels.length} Chat-Modelle geladen (${json.latencyMs ?? 0} ms)${
+                  skippedNonChat > 0 ? ` · ${skippedNonChat} Nicht-Chat-Modelle (TTS/Whisper/Embed) ausgeblendet` : ''
+                }.`,
         });
       } else if (json.ok) {
         setAvailableModels([]);
         setModelsNote({
           ok: true,
-          text: `HTTP ${json.httpStatus ?? 200} — Endpunkt aktiv, aber leere Modell-Liste. Modell-ID manuell eingeben.`,
+          text:
+            targetType === 'bridge'
+              ? `HTTP ${json.httpStatus ?? 200} — leere Live-Liste, zeige verifizierte Standardmodelle der Bridge.`
+              : `HTTP ${json.httpStatus ?? 200} — Endpunkt aktiv, aber leere Modell-Liste. Modell-ID manuell eingeben.`,
         });
       } else {
         setAvailableModels([]);
@@ -1243,43 +1314,6 @@ export function ChatWorkbenchView({
               </div>
             )}
 
-            {/* DuckDuckGo AI (duck2api) Verified Quick-Model Selector */}
-            {targetType === 'bridge' && selectedBridgeId === 'duck2api' && (
-              <div className="space-y-2 rounded-md border border-teal-200 bg-teal-50/40 p-3 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-teal-950">DuckDuckGo AI Modelle (duck2api)</span>
-                  <button
-                    type="button"
-                    onClick={() => void fetchBridgeHealthz('duck2api')}
-                    disabled={loadingHealthz}
-                    className="inline-flex items-center gap-1 font-mono text-[10px] text-teal-800 hover:underline disabled:opacity-50"
-                  >
-                    <RefreshCw
-                      className={`h-3 w-3 ${loadingHealthz ? 'animate-spin' : ''}`}
-                      aria-hidden="true"
-                    />
-                    /v1/models
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {(availableModels.length > 0 ? availableModels : [...DUCK2API_MODELS]).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => setModelId(m)}
-                      className={`rounded border px-2 py-1 font-mono text-[10px] transition-colors ${
-                        modelId === m
-                          ? 'border-teal-700 bg-teal-700 font-semibold text-white'
-                          : 'border-slate-300 bg-white text-slate-700 hover:border-teal-500'
-                      }`}
-                    >
-                      {m}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
             {/* Grok Bridge Specific Capabilities & Live /healthz Panel */}
             {isGrokBridge && (
               <div className="space-y-2.5 rounded-md border border-teal-200 bg-teal-50/40 p-3 text-xs">
@@ -1327,29 +1361,6 @@ export function ChatWorkbenchView({
                     </div>
                   </div>
                 )}
-
-                <div>
-                  <span className="block text-[11px] font-medium text-slate-700">
-                    Grok-Modus (Direktwahl)
-                  </span>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {GROK_BRIDGE_MODELS.map((m) => (
-                      <button
-                        key={m.id}
-                        type="button"
-                        title={m.desc}
-                        onClick={() => setModelId(m.id)}
-                        className={`rounded border px-2 py-0.5 font-mono text-[10px] transition-colors ${
-                          modelId === m.id
-                            ? 'border-teal-700 bg-teal-700 font-semibold text-white'
-                            : 'border-slate-300 bg-white text-slate-800 hover:bg-slate-100'
-                        }`}
-                      >
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
 
                 <label className="flex cursor-pointer items-center justify-between gap-2 rounded border border-teal-200/70 bg-white px-2.5 py-1.5 text-[11px] text-slate-800">
                   <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -1417,7 +1428,46 @@ export function ChatWorkbenchView({
                     onChange={(e) => setOnlyDirectRestProviders(e.target.checked)}
                     className="h-3 w-3 accent-teal-700"
                   />
-                  Nur direkt chatfähige APIs
+                  Nur direkte APIs
+                </label>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !onlyUnfilteredProviders;
+                    setOnlyUnfilteredProviders(next);
+                    if (next) {
+                      const currentIsUnfiltered = activeProvider?.isUnfiltered ?? false;
+                      if (!currentIsUnfiltered) {
+                        const firstUnfiltered = usableProviders.find(
+                          (p) =>
+                            p.isUnfiltered &&
+                            (!onlyDirectRestProviders ||
+                              (providerMetaMap.get(p.id)?.supportsOpenAi ?? false))
+                        );
+                        if (firstUnfiltered) handleSelectProvider(firstUnfiltered.id);
+                      }
+                    }
+                  }}
+                  aria-pressed={onlyUnfilteredProviders}
+                  className={`inline-flex items-center gap-1 rounded border px-2 py-1 font-mono text-[11px] font-semibold transition-colors tabular-nums ${
+                    onlyUnfilteredProviders
+                      ? 'border-fuchsia-600 bg-fuchsia-700 text-white'
+                      : 'border-fuchsia-300 bg-fuchsia-50 text-fuchsia-800 hover:bg-fuchsia-100'
+                  }`}
+                >
+                  <Flame className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  Nur Unfiltered ({unfilteredUsableCount})
+                </button>
+                <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={sortUnfilteredFirst}
+                    onChange={(e) => setSortUnfilteredFirst(e.target.checked)}
+                    className="h-3 w-3 accent-fuchsia-700"
+                  />
+                  Unfiltered zuerst
                 </label>
               </div>
               <div className="relative">
@@ -1430,19 +1480,34 @@ export function ChatWorkbenchView({
                   type="text"
                   value={providerSearch}
                   onChange={(e) => setProviderSearch(e.target.value)}
-                  placeholder="z. B. ovh, pollinations, groq, mistral, ollama…"
+                  placeholder="z. B. unfiltered, unrestrictable, mancer, venice, groq…"
                   className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-2.5 pl-8 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
                 />
               </div>
             </div>
 
             <div>
-              <label
-                htmlFor="chat-provider-select"
-                className="block text-xs font-medium text-slate-700"
-              >
-                Provider auswählen
-              </label>
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor="chat-provider-select"
+                  className="block text-xs font-medium text-slate-700"
+                >
+                  Provider auswählen
+                </label>
+                {activeProviderKeyPage && (
+                  <a
+                    href={activeProviderKeyPage.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`${activeProviderKeyPage.label} von ${activeProvider?.name || ''} öffnen (${activeProviderKeyPage.url})`}
+                    className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-0.5 font-mono text-[10px] font-semibold text-amber-900 transition-colors hover:bg-amber-100"
+                  >
+                    <KeyRound className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    API-Key holen
+                    <ExternalLink className="h-2.5 w-2.5 shrink-0 opacity-75" aria-hidden="true" />
+                  </a>
+                )}
+              </div>
               <select
                 id="chat-provider-select"
                 value={selectedProviderId}
@@ -1453,7 +1518,8 @@ export function ChatWorkbenchView({
                   const meta = providerMetaMap.get(p.id);
                   return (
                     <option key={p.id} value={p.id}>
-                      [{p.securityClass} · {meta?.readinessTag || 'API'}] {p.name}
+                      [{p.isUnfiltered ? 'UNFILTERED · ' : ''}
+                      {p.securityClass} · {meta?.readinessTag || 'API'}] {p.name}
                     </option>
                   );
                 })}
@@ -1550,7 +1616,7 @@ export function ChatWorkbenchView({
         <div>
           <div className="flex items-center justify-between gap-2">
             <label htmlFor="chat-model-id" className="block text-xs font-medium text-slate-700">
-              Modell-ID
+              {targetType === 'bridge' ? 'Verifiziertes Bridge-Modell' : 'Modell-ID'}
             </label>
             <button
               type="button"
@@ -1562,29 +1628,69 @@ export function ChatWorkbenchView({
                 className={`h-3 w-3 ${loadingModels ? 'animate-spin' : ''}`}
                 aria-hidden="true"
               />
-              {loadingModels ? 'Lädt…' : 'Modelle laden'}
+              {loadingModels ? 'Lädt…' : targetType === 'bridge' ? 'Live prüfen' : 'Modelle laden'}
             </button>
           </div>
-          <input
-            id="chat-model-id"
-            type="text"
-            list="chat-loaded-models"
-            value={modelId}
-            onChange={(e) => setModelId(e.target.value)}
-            placeholder="z. B. grok-fast, grok-expert, llama-3.3-70b-versatile"
-            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
-          />
-          <datalist id="chat-loaded-models">
-            {availableModels.map((m) => (
-              <option key={m} value={m} />
-            ))}
-          </datalist>
+          {targetType === 'bridge' && bridgeModelOptions.length > 0 ? (
+            <>
+              {bridgeModelOptions.length > 1 ? (
+                <select
+                  id="chat-model-id"
+                  value={
+                    bridgeModelOptions.some((m) => m.id === modelId)
+                      ? modelId
+                      : bridgeModelOptions[0].id
+                  }
+                  onChange={(e) => setModelId(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
+                >
+                  {bridgeModelOptions.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.note ? `${m.id} — ${m.note}` : m.id}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div
+                  id="chat-model-id"
+                  className="mt-1 flex items-center justify-between rounded-md border border-slate-300 bg-slate-100 px-2.5 py-1.5 font-mono text-xs text-slate-800"
+                >
+                  <span>{bridgeModelOptions[0].id}</span>
+                  {bridgeModelOptions[0].note && (
+                    <span className="text-[10px] text-slate-500">{bridgeModelOptions[0].note}</span>
+                  )}
+                </div>
+              )}
+              <p className="mt-1 font-mono text-[10px] text-slate-600">
+                {bridgeModelsAreLive
+                  ? `Exklusiv verifiziert (Live /v1/models · ${bridgeModelOptions.length} aktiv)`
+                  : `Exklusiv verifiziert (Bridge-Quellcode · ${bridgeModelOptions.length} aktiv)`}
+              </p>
+            </>
+          ) : (
+            <>
+              <input
+                id="chat-model-id"
+                type="text"
+                list="chat-loaded-models"
+                value={modelId}
+                onChange={(e) => setModelId(e.target.value)}
+                placeholder="z. B. gpt-oss-20b, openai-fast, llama-3.3-70b-versatile"
+                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
+              />
+              <datalist id="chat-loaded-models">
+                {availableModels.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+            </>
+          )}
           {modelsNote && (
             <p className={`mt-1 text-[11px] ${modelsNote.ok ? 'text-emerald-700' : 'text-red-700'}`}>
               {modelsNote.text}
             </p>
           )}
-          {availableModels.length > 0 && (
+          {targetType !== 'bridge' && availableModels.length > 0 && (
             <div className="mt-2 flex max-h-24 flex-wrap gap-1 overflow-y-auto">
               {availableModels.slice(0, 12).map((m) => (
                 <button
@@ -1605,20 +1711,31 @@ export function ChatWorkbenchView({
         </div>
 
         <div>
-          <label
-            htmlFor="chat-api-key"
-            className="flex items-center justify-between gap-1.5 text-xs font-medium text-slate-700"
-          >
-            <span className="inline-flex items-center gap-1.5">
+          <div className="flex items-center justify-between gap-1.5">
+            <label
+              htmlFor="chat-api-key"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700"
+            >
               <KeyRound className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
               Session-Key / Bridge-Token (nur RAM)
-            </span>
-            {targetType === 'provider' && activeProvider?.auth_typ === 'api_key' && !apiKey.trim() && (
+            </label>
+            {targetType === 'provider' && activeProviderKeyPage ? (
+              <a
+                href={activeProviderKeyPage.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={activeProviderKeyPage.url}
+                className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold text-amber-800 hover:underline"
+              >
+                Key-Seite
+                <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
+              </a>
+            ) : targetType === 'provider' && activeProvider?.auth_typ === 'api_key' && !apiKey.trim() ? (
               <span className="font-mono text-[10px] font-semibold text-amber-700">
                 Key erforderlich
               </span>
-            )}
-          </label>
+            ) : null}
+          </div>
           <input
             id="chat-api-key"
             type="password"
@@ -1770,7 +1887,10 @@ export function ChatWorkbenchView({
                     BRIDGE (ROT)
                   </span>
                 ) : targetType === 'provider' && activeProvider ? (
-                  <SecurityClassTag secClass={activeProvider.securityClass} />
+                  <>
+                    <SecurityClassTag secClass={activeProvider.securityClass} />
+                    {activeProvider.isUnfiltered && <UnfilteredTag compact />}
+                  </>
                 ) : (
                   <span className="font-mono text-xs font-semibold text-emerald-700">
                     LOKAL (127.0.0.1)

@@ -1,4 +1,5 @@
 import type { ChatTargetType } from './chatEngine.ts';
+import type { CodingToolEvent, CodingToolId } from './codingTypes.ts';
 
 export interface NotebookKnowledgeDoc {
   id: string;
@@ -33,6 +34,7 @@ export interface NotebookChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'error';
   content: string;
+  thinking?: string;
   createdAt: string;
   model?: string;
   latencyMs?: number;
@@ -41,6 +43,8 @@ export interface NotebookChatMessage {
   rawPreview?: string;
   attachments?: ChatAttachmentMeta[];
   contextSources?: ChatContextCitation[];
+  toolEvents?: CodingToolEvent[];
+  providerMeta?: Record<string, unknown>;
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
@@ -806,6 +810,7 @@ export function validateWorkspacePayload(
           id: typeof m.id === 'string' ? m.id.slice(0, 80) : createId('msg'),
           role: m.role,
           content: m.content.slice(0, 64000),
+          thinking: typeof m.thinking === 'string' && m.thinking.trim() ? m.thinking.slice(0, 24000) : undefined,
           createdAt: typeof m.createdAt === 'string' ? m.createdAt.slice(0, 32) : '',
           model: typeof m.model === 'string' ? m.model.slice(0, 120) : undefined,
           latencyMs: typeof m.latencyMs === 'number' ? m.latencyMs : undefined,
@@ -835,6 +840,19 @@ export function validateWorkspacePayload(
                   title: typeof s.title === 'string' ? s.title.slice(0, 140) : '',
                   excerpt: typeof s.excerpt === 'string' ? s.excerpt.slice(0, 240) : '',
                   score: typeof s.score === 'number' ? s.score : 0,
+                }))
+            : undefined,
+          toolEvents: Array.isArray(m.toolEvents)
+            ? m.toolEvents
+                .filter((t): t is Record<string, unknown> => Boolean(t && typeof t === 'object'))
+                .slice(0, 12)
+                .map((t) => ({
+                  id: typeof t.id === 'string' ? t.id.slice(0, 80) : createId('tool'),
+                  tool: (typeof t.tool === 'string' ? t.tool : 'list_workspace_files') as CodingToolId,
+                  args: {},
+                  ok: Boolean(t.ok),
+                  summary: typeof t.summary === 'string' ? t.summary.slice(0, 200) : '',
+                  resultPreview: typeof t.resultPreview === 'string' ? t.resultPreview.slice(0, 400) : '',
                 }))
             : undefined,
         });

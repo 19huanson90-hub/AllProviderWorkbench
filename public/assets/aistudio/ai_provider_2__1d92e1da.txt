@@ -4475,4 +4475,215 @@ for datei, dienst in scan_pfad("./mein_projekt"):
 - **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
 - **kommerzielle_nutzung:** unklar
 - **quelle:** https://ablit.app  |  **entdeckt_am:** 2026-11-21
+## Abliteration.ai (OpenAI-kompatible API)
+- **id:** abliteration-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://abliteration.ai
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (api.abliteration.ai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Spezialisierter Anbieter fuer abliterated Open-Weight-Modelle ueber eine live verifizierte OpenAI-kompatible REST-API (https://api.abliteration.ai/v1). Empirisch geprueft (2026-11-21): GET /v1/models und POST /v1/chat/completions antworten mit HTTP 401 JSON (Authorization: Bearer <key> oder x-api-key erforderlich).
+- **einschraenkungen:** Erfordert eigenen API-Key (nicht keyless) | Zero-Retention- und EU-Residenz-Zusagen nicht unabhaengig auditiert (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /v1/models mit API-Key abrufbar"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "laut Anbieter Zero-Prompt-Retention (nicht unabhaengig auditiert)"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://abliteration.ai  |  **entdeckt_am:** 2026-11-21
+## Open Uncensored (OpenAI-kompatible API, 63 Modelle)
+- **id:** openuncensored  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://openuncensored.com
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (api.openuncensored.com/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Live verifizierte OpenAI-kompatible REST-API (https://api.openuncensored.com/v1) fuer abliterated und unzensierte Open-Weight-Modelle. Empirisch geprueft (2026-11-21): GET /v1/models liefert HTTP 200 JSON mit 63 Modellen (u. a. abliterated-model, abliterated-large-v2, abliterated-large-flash); POST /v1/chat/completions meldet HTTP 401 JSON ohne Bearer API-Key.
+- **einschraenkungen:** Chat-Aufrufe erfordern eigenen Bearer API-Key (nicht keyless) | Betreibertransparenz und Datenpolitik nicht unabhaengig geprueft (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": 63, "beispiele": ["abliterated-model", "abliterated-large-v2", "abliterated-large-flash"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://api.openuncensored.com/v1/models  |  **entdeckt_am:** 2026-11-21
+## MagmaRouter (OpenAI-kompatible API, 8 Modelle)
+- **id:** magmarouter  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://magmarouter.com
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (api.magmarouter.com/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Live verifizierter OpenAI-kompatibler Router (https://api.magmarouter.com/v1) fuer abliterated / xploded Open-Weight-Modelle. Empirisch geprueft (2026-11-21): GET /v1/models liefert HTTP 200 JSON mit 8 Modellen (u. a. glm-5.3-xploded, kimi-k3.1-pro-xploded, deepseek-v4.1-flash-1017-xploded); POST /v1/chat/completions meldet HTTP 401 JSON ohne Bearer-Key (sk-mr-...).
+- **einschraenkungen:** Erfordert eigenen Bearer API-Key (Praefix sk-mr-...) | Betreibertransparenz und Datenpolitik nicht unabhaengig geprueft (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": 8, "beispiele": ["glm-5.3-xploded", "glm-5.3-flash-xploded", "deepseek-v4.1-flash-1017-xploded"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://api.magmarouter.com/v1/models  |  **entdeckt_am:** 2026-11-21
+## Mancer AI (OpenAI-kompatible API, 12 Modelle)
+- **id:** mancer-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://mancer.tech
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (neuro.mancer.tech/oai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Bekannter Inferenz-Anbieter fuer unzensierte Roleplay- und Open-Weight-Modelle (u. a. MythoMax, DeepSeek-Varianten) mit live verifizierter OpenAI-kompatibler API (https://neuro.mancer.tech/oai/v1). Empirisch geprueft (2026-11-21): GET /oai/v1/models liefert HTTP 200 JSON mit 12 Modellen; POST /oai/v1/chat/completions meldet HTTP 401 JSON ohne Auth-Header.
+- **einschraenkungen:** Erfordert eigenen Mancer API-Key | Datenschutz- und Aufbewahrungszusagen nicht unabhaengig auditiert (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** free_tier_limitiert
+- **modelle:** {"anzahl": 12, "beispiele": ["mythomax", "deepseek-v4-flash", "deepseek-v41-flash"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://neuro.mancer.tech/oai/v1/models  |  **entdeckt_am:** 2026-11-21
+## Infermatic AI (OpenAI-kompatible API)
+- **id:** infermatic-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://infermatic.ai
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (api.infermatic.ai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Open-Weight- und Uncensored-LLM-Inferenzdienst mit live verifizierter OpenAI-kompatibler REST-API (https://api.infermatic.ai/v1; alternativer Host laut Doku auch api.totalgpt.ai/v1). Empirisch geprueft (2026-11-21): GET /v1/models und POST /v1/chat/completions antworten mit HTTP 401 JSON (Bearer API-Key erforderlich).
+- **einschraenkungen:** Erfordert eigenen Infermatic API-Key | Betreiber-ToS und Datenaufbewahrung pruefen (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /v1/models mit Bearer-Key abrufbar"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://infermatic.ai  |  **entdeckt_am:** 2026-11-21
+## Arli AI (OpenAI-kompatible API)
+- **id:** arli-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://www.arliai.com
+- **kategorien:** kostenlos_dauerhaft, mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (api.arliai.com/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Inferenz-Plattform fuer offene, unzensierte und Roleplay-LLMs mit kostenlosem sowie kostenpflichtigem Tarif ueber eine live verifizierte OpenAI-kompatible REST-API (https://api.arliai.com/v1). Empirisch geprueft (2026-11-21): GET /v1/models und POST /v1/chat/completions antworten mit HTTP 401 JSON (Authorization-Header erforderlich).
+- **einschraenkungen:** Erfordert Account und eigenen Bearer API-Key; Free-Tier mit Rate-Limits/Queues | Datenpolitik nicht unabhaengig auditiert (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** dauerhaft
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /v1/models mit Bearer-Key abrufbar"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://www.arliai.com  |  **entdeckt_am:** 2026-11-21
+## RedPill AI / Phala TEE (OpenAI-kompatible API, 40 Modelle)
+- **id:** redpill-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://redpill.ai
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (api.redpill.ai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Vertraulicher KI-Router (auch ueber Hardware-TEE unter tee.redpill.ai/v1) mit unzensierten Open-Weight-Modellen. Empirisch geprueft (2026-11-21): GET /v1/models liefert HTTP 200 JSON mit 40 Modellen (u. a. phala/deepseek-v4.1-flash-1017-uncensored, deepseek/deepseek-v4-flash-0731); POST /v1/chat/completions meldet HTTP 401 JSON ohne API-Key.
+- **einschraenkungen:** Chat-Aufrufe erfordern eigenen API-Key | TEE-Attestierung und Betreiberbedingungen vor sensibler Nutzung pruefen (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": 40, "beispiele": ["phala/deepseek-v4.1-flash-1017-uncensored", "deepseek/deepseek-v4-flash-0731", "moonshotai/kimi-k3.1-pro"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "TEE-Confidential-Computing laut Anbieter (nicht lokal verifiziert)"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://api.redpill.ai/v1/models  |  **entdeckt_am:** 2026-11-21
+## PayPerQ / PPQ.ai (OpenAI-kompatible API, 393 Modelle)
+- **id:** ppq-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://ppq.ai
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (api.ppq.ai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Privacy-/Pay-per-Prompt-KI-Router (u. a. Krypto-/Prepaid-Credits) ueber live verifizierte OpenAI-kompatible REST-API (https://api.ppq.ai/v1). Empirisch geprueft (2026-11-21): GET /v1/models liefert HTTP 200 JSON mit 393 Modellen; POST /v1/chat/completions meldet HTTP 401 JSON (Authorization, x-api-key oder x-credit-id erforderlich).
+- **einschraenkungen:** Erfordert Credit-ID oder API-Key (nicht kostenlos) | Routing erfolgt an diverse Dritt-Provider mit unterschiedlichen Filter- und Datenregeln (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": 393, "beispiele": ["via GET /v1/models oeffentlich abrufbar"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://api.ppq.ai/v1/models  |  **entdeckt_am:** 2026-11-21
+## AkashML (OpenAI-kompatible API)
+- **id:** akashml  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://akashml.com
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (api.akashml.com/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Verwaltete Open-Weight-Inferenz auf dem dezentralen Akash-GPU-Netzwerk ueber live verifizierte OpenAI-kompatible REST-API (https://api.akashml.com/v1). Empirisch geprueft (2026-11-21): GET /v1/models und POST /v1/chat/completions antworten mit HTTP 401 JSON (Bearer Token/API-Key erforderlich).
+- **einschraenkungen:** Erfordert eigenen AkashML Bearer-Key | Dezentrale GPU-Anbieter koennen unterschiedliche Daten-/Betriebsbedingungen haben (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /v1/models mit Bearer-Key abrufbar"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://akashml.com  |  **entdeckt_am:** 2026-11-21
+## Nous Research Inference API (OpenAI-kompatible API, 415 Modelle)
+- **id:** nous-research  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://portal.nousresearch.com
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (inference-api.nousresearch.com/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Inferenz-Portal von Nous Research ueber eine live verifizierte OpenAI-kompatible REST-API (https://inference-api.nousresearch.com/v1). Empirisch geprueft (2026-11-21): GET /v1/models liefert HTTP 200 JSON mit 415 Modellen; Chat-Anfragen pruefen gueltige Modell-IDs und Account-Authentifizierung.
+- **einschraenkungen:** Erfordert gueltigen Portal-API-Key und im Katalog freigeschaltete Modell-ID | Nutzungsbedingungen und Verfuegbarkeit einzelner Modelle koennen sich aendern (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": 415, "beispiele": ["thinkingmachines/inkling-2-mini", "radixark/daisyrose-27b"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://inference-api.nousresearch.com/v1/models  |  **entdeckt_am:** 2026-11-21
+## Tinfoil.sh Confidential AI (OpenAI-kompatible API, 20 Modelle)
+- **id:** tinfoil-sh  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://tinfoil.sh
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (inference.tinfoil.sh/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Hardware-verifizierte Confidential-Computing-Inferenz (TEE) fuer Open-Weight-Modelle ueber live verifizierte OpenAI-kompatible REST-API (https://inference.tinfoil.sh/v1). Empirisch geprueft (2026-11-21): GET /v1/models liefert HTTP 200 JSON mit 20 Modellen (u. a. deepseek-v4-1-flash, glm-5-3, kimi-k3-1-pro); POST /v1/chat/completions meldet HTTP 401 JSON ohne API-Key.
+- **einschraenkungen:** Chat-Aufrufe erfordern eigenen API-Key | TEE-Attestierung fuer volle Vertraulichkeit erfordert Client-Verifikation (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": 20, "beispiele": ["deepseek-v4-1-flash", "glm-5-3", "kimi-k3-1-pro"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "Hardware-TEE laut Anbieter (nicht lokal attestiert)"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://inference.tinfoil.sh/v1/models  |  **entdeckt_am:** 2026-11-21
+## NoTrack.ai (OpenAI-kompatible API)
+- **id:** notrack-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://notrack.ai
+- **kategorien:** kostenlos_dauerhaft, mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (notrack.ai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Privater Web-Chat ohne Tracking-Versprechen mit live verifizierter OpenAI-kompatibler REST-API (https://notrack.ai/v1). Empirisch geprueft (2026-11-21): GET /v1/models und POST /v1/chat/completions antworten mit HTTP 401 JSON (Authorization: Bearer <key> erforderlich).
+- **einschraenkungen:** REST-API erfordert eigenen Bearer API-Key (nicht keyless) | No-Track-/No-Log-Angaben nicht unabhaengig auditiert (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** web_session_free
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /v1/models mit Bearer-Key abrufbar"], "open_weight": false}
+- **datenpolitik:** {"training": "unklar", "speicherung": "laut Anbieter No-Track (nicht unabhaengig auditiert)"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://notrack.ai  |  **entdeckt_am:** 2026-11-21
+## Gab AI (OpenAI-kompatible API, 222 Modelle)
+- **id:** gab-ai  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://gab.ai
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (gab.ai/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Unzensierte KI-Plattform mit live verifizierter OpenAI-kompatibler REST-API (https://gab.ai/v1). Empirisch geprueft (2026-11-21): GET /v1/models liefert HTTP 200 JSON mit 222 Modellen (u. a. auto, arya); POST /v1/chat/completions meldet HTTP 401 JSON ohne API-Key.
+- **einschraenkungen:** Chat-Aufrufe erfordern eigenen Bearer API-Key | Betreiber-ToS und Datenaufbewahrung vor Nutzung pruefen (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": 222, "beispiele": ["auto", "arya"], "open_weight": false}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://gab.ai/v1/models  |  **entdeckt_am:** 2026-11-21
+## UnfilteredAIModels.com (OpenAI-kompatible API)
+- **id:** unfilteredaimodels  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-21)
+- **url:** https://unfilteredaimodels.com
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (api.unfilteredaimodels.com/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Plattform fuer ungefilterte/abliterated Modelle mit live verifizierter OpenAI-kompatibler REST-API (https://api.unfilteredaimodels.com/v1). Empirisch geprueft (2026-11-21): GET /v1/models und POST /v1/chat/completions antworten mit HTTP 401 JSON (Authorization: Bearer <key> erforderlich).
+- **einschraenkungen:** Erfordert eigenen Bearer API-Key (nicht keyless) | Betreibertransparenz und Datenpolitik nicht unabhaengig geprueft (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": null, "beispiele": ["via GET /v1/models mit Bearer-Key abrufbar"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://unfilteredaimodels.com  |  **entdeckt_am:** 2026-11-21
+## UplinkSwitch (Uncensored / Abliterated OpenAI-API)
+- **id:** uplinkswitch  |  **update_typ:** neu  |  **verifikation:** live_api_probe (2026-11-22)
+- **url:** https://uplinkswitch.com
+- **kategorien:** mit_anmeldung
+- **verbindungsart:** REST/OpenAI-kompatibel (api.uplinkswitch.com/v1)  |  **protokoll:** openai_kompatibel
+- **beschreibung:** Spezialisierte OpenAI-kompatible API (https://api.uplinkswitch.com/v1) fuer abliterated und unzensierte Open-Weight-Modelle inkl. Coding- und Thinking-Varianten. Empirisch geprueft (2026-11-22): GET /v1/models liefert HTTP 200 JSON mit 80+ Modellen (u. a. abliterated-model, qwen3.8-27b-uncensored-thinking, uncensored-coding-agent, auto/uncensored); POST /v1/chat/completions meldet HTTP 401 JSON ohne Bearer API-Key.
+- **einschraenkungen:** Erfordert eigenen Bearer API-Key (nicht anonym/keyless via API) | Betreiber-ToS und Datenschutz vor Nutzung pruefen (Klasse GELB)
+- **flags:** riskant=False, forschung=False, selbst_evaluierend=False, empfehlenswert=unklar
+- **auth_typ:** api_key
+- **free_tier_typ:** unklar
+- **modelle:** {"anzahl": 80, "beispiele": ["abliterated-model", "qwen3.8-27b-uncensored-thinking", "uncensored-coding-agent", "auto/uncensored"], "open_weight": true}
+- **datenpolitik:** {"training": "unklar", "speicherung": "unklar"}
+- **kommerzielle_nutzung:** unklar
+- **quelle:** https://api.uplinkswitch.com/v1/models  |  **entdeckt_am:** 2026-11-22
+
 
